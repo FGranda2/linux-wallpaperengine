@@ -184,6 +184,10 @@ if(WAYLAND_SUPPORT_FOUND)
         src/WallpaperEngine/Render/Drivers/WaylandOpenGLDriver.cpp
         src/WallpaperEngine/Render/Drivers/Detectors/WaylandFullScreenDetector.cpp
         src/WallpaperEngine/Render/Drivers/Detectors/WaylandFullScreenDetector.h
+        src/WallpaperEngine/Render/Drivers/Detectors/NiriIPC.cpp
+        src/WallpaperEngine/Render/Drivers/Detectors/NiriIPC.h
+        src/WallpaperEngine/Render/Drivers/Detectors/NiriFullScreenDetector.cpp
+        src/WallpaperEngine/Render/Drivers/Detectors/NiriFullScreenDetector.h
         src/WallpaperEngine/Render/Drivers/Output/WaylandOutput.cpp
         src/WallpaperEngine/Render/Drivers/Output/WaylandOutput.h
         src/WallpaperEngine/Render/Drivers/Output/WaylandOutputViewport.cpp

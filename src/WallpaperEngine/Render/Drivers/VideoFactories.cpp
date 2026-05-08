@@ -1,8 +1,13 @@
 #include <algorithm>
+#include <cstdlib>
 
 #include "VideoFactories.h"
 #include "WallpaperEngine/Logging/Log.h"
 #include <cassert>
+
+#ifdef ENABLE_WAYLAND
+#include "Detectors/NiriFullScreenDetector.h"
+#endif
 
 using namespace WallpaperEngine::Render::Drivers;
 
@@ -81,9 +86,26 @@ std::unique_ptr<VideoDriver> VideoFactories::createVideoDriver (
 std::unique_ptr<Detectors::FullScreenDetector> VideoFactories::createFullscreenDetector (
     const std::string& xdgSessionType, ApplicationContext& context, VideoDriver& driver
 ) {
+    if (!context.settings.render.pauseOnFullscreen) {
+	return std::make_unique<Detectors::FullScreenDetector> (context);
+    }
+
+#ifdef ENABLE_WAYLAND
+    // On Niri, the wlr-foreign-toplevel-management state never reports
+    // FULLSCREEN/MAXIMIZED for tiled windows, so the standard Wayland
+    // detector is useless. Detect Niri via $NIRI_SOCKET and use the IPC-
+    // based detector instead.
+    if (xdgSessionType == "wayland") {
+	const char* niriSocket = std::getenv ("NIRI_SOCKET");
+	if (niriSocket != nullptr && *niriSocket != '\0') {
+	    return std::make_unique<Detectors::NiriFullScreenDetector> (context);
+	}
+    }
+#endif
+
     const auto it = this->m_fullscreenFactories.find (xdgSessionType);
 
-    if (it == this->m_fullscreenFactories.end () || !context.settings.render.pauseOnFullscreen) {
+    if (it == this->m_fullscreenFactories.end ()) {
 	return std::make_unique<Detectors::FullScreenDetector> (context);
     }
 
