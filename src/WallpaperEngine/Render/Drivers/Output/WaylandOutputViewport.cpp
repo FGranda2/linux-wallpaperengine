@@ -200,6 +200,22 @@ void WaylandOutputViewport::swapOutput () {
     wl_surface_commit (surface);
 }
 
+void WaylandOutputViewport::pauseTick () {
+    // Keep the frame-callback chain alive without GL work. Request the next
+    // callback and commit the surface; the compositor will continue to
+    // present the previously attached buffer (last drawn frame) and fire the
+    // callback on the next refresh tick. No eglSwapBuffers, no damage, no
+    // buffer attach.
+    if (frameCallback != nullptr) {
+	// A callback is already pending; the compositor will fire it on the
+	// next refresh. Don't queue a second listener.
+	return;
+    }
+    frameCallback = wl_surface_frame (surface);
+    wl_callback_add_listener (frameCallback, &frameListener, this);
+    wl_surface_commit (surface);
+}
+
 void WaylandOutputViewport::resize () {
     if (!this->eglWindow) {
 	return;

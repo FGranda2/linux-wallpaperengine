@@ -12,4 +12,8 @@ Application::ApplicationContext& FullScreenDetector::getApplicationContext () co
 
 bool FullScreenDetector::anythingFullscreen () const { return false; }
 
+std::optional<std::unordered_set<std::string>> FullScreenDetector::coveredOutputs () const {
+    return std::nullopt;
+}
+
 void FullScreenDetector::reset () { }

@@ -51,6 +51,7 @@ void CVideo::renderFrame (const glm::ivec4& viewport) {
 const Data::Model::Video& CVideo::getVideo () const { return *this->getWallpaperData ().as<Data::Model::Video> (); }
 
 void CVideo::setPause (bool newState) {
+    CWallpaper::setPause (newState);
     if (newState) {
 	this->m_player->setPaused ();
     } else {

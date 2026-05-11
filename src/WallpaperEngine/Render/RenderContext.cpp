@@ -39,12 +39,6 @@ void RenderContext::setWallpaper (const std::string& display, std::shared_ptr<CW
     this->m_wallpapers.insert_or_assign (display, wallpaper);
 }
 
-void RenderContext::setPause (const bool newState) const {
-    for (const auto& wallpaper : this->m_wallpapers | std::views::values) {
-	wallpaper->setPause (newState);
-    }
-}
-
 Input::InputContext& RenderContext::getInputContext () const { return this->m_driver.getInputContext (); }
 
 const WallpaperApplication& RenderContext::getApp () const { return this->m_app; }

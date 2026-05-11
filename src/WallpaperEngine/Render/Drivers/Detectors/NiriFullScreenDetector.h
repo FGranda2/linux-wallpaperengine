@@ -5,6 +5,10 @@
 #include <chrono>
 #include <memory>
 #include <mutex>
+#include <optional>
+#include <string>
+#include <unordered_map>
+#include <unordered_set>
 
 #include "FullScreenDetector.h"
 
@@ -18,10 +22,12 @@ class NiriIPC;
  * Niri does not mark its tiled windows as FULLSCREEN/MAXIMIZED in
  * wlr-foreign-toplevel-management, so the standard Wayland detector cannot
  * detect when wallpaper is occluded by a regular tiled column. Instead this
- * detector queries Niri's IPC, sums tile_size across all windows on each
- * output's active workspace, and reports "covered" when the aggregate area
- * meets a configurable threshold of the output's logical area on every
- * managed output.
+ * detector queries Niri's IPC, sums tile_size across each output's active
+ * workspace independently, and reports per-output coverage when the aggregate
+ * meets the threshold for that specific output.
+ *
+ * Each output's coverage is debounced independently so workspace changes on
+ * one monitor never delay or suppress transitions on another.
  */
 class NiriFullScreenDetector final : public FullScreenDetector {
 public:
@@ -29,15 +35,21 @@ public:
     ~NiriFullScreenDetector () override;
 
     [[nodiscard]] bool anythingFullscreen () const override;
+    [[nodiscard]] std::optional<std::unordered_set<std::string>> coveredOutputs () const override;
     void reset () override;
 
 private:
+    struct DebounceState {
+        bool raw = false;
+        bool debounced = false;
+        std::chrono::steady_clock::time_point lastChange {};
+    };
+
     void recompute ();
+    void advanceDebounceLocked () const;
 
     mutable std::mutex m_mutex;
-    bool m_rawCovered = false;
-    mutable bool m_debouncedCovered = false;
-    mutable std::chrono::steady_clock::time_point m_lastChange;
+    mutable std::unordered_map<std::string, DebounceState> m_perOutput;
 
     std::unique_ptr<NiriIPC> m_ipc;
 };

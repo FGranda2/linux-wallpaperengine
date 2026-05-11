@@ -23,6 +23,7 @@
 #include <algorithm>
 #include <numeric>
 #include <unistd.h>
+#include <unordered_set>
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include <stb_image_write.h>
 #include <thread>
@@ -449,6 +450,13 @@ void WallpaperApplication::updatePlaylists () {
     const auto now = std::chrono::steady_clock::now ();
 
     for (auto& [screen, playlist] : this->m_activePlaylists) {
+	// Hold time for paused outputs: do not advance lastUpdate, otherwise
+	// the resume-time compensation would be against a stale-but-advancing
+	// reference and timers would drift.
+	if (this->m_pauseStartByOutput.contains (screen)) {
+	    continue;
+	}
+
 	playlist.lastUpdate = now;
 
 	if (playlist.definition.settings.mode != "timer") {
@@ -749,87 +757,157 @@ void WallpaperApplication::setup () {
 #endif /* DEMOMODE */
 }
 
+void WallpaperApplication::applyPerOutputPause () {
+    const auto& wallpapers = this->m_renderContext->getWallpapers ();
+
+    // Build the set of output names that should be paused this frame.
+    std::unordered_set<std::string> covered;
+    auto perOutput = this->m_fullScreenDetector->coveredOutputs ();
+    const bool detectorIsPerOutput = perOutput.has_value ();
+    if (detectorIsPerOutput) {
+	covered = std::move (*perOutput);
+    } else if (this->m_fullScreenDetector->anythingFullscreen ()) {
+	// Detector cannot answer per-output (X11/Wayland): treat as "every
+	// known output is covered" so global pause behavior is preserved.
+	for (const auto& [screen, _] : wallpapers) {
+	    covered.insert (screen);
+	}
+    }
+
+    // Diagnostic: if the detector reports a covered output whose name doesn't
+    // appear in our wallpaper map, no transition will fire for it — warn so
+    // the mismatch surfaces in logs instead of silently doing nothing.
+    for (const auto& name : covered) {
+	if (wallpapers.find (name) == wallpapers.end ()) {
+	    sLog.debug (
+		"applyPerOutputPause: detector reported covered output '", name,
+		"' which is not in wallpapers map (configured screens: ",
+		[&] {
+		    std::string list;
+		    for (const auto& [screen, _] : wallpapers) {
+			if (!list.empty ())
+			    list += ", ";
+			list += "'" + screen + "'";
+		    }
+		    return list;
+		} (),
+		")"
+	    );
+	}
+    }
+
+    const auto now = std::chrono::steady_clock::now ();
+
+    // Apply transitions for every wallpaper we manage.
+    for (const auto& [screen, wallpaper] : wallpapers) {
+	const bool shouldPause = covered.contains (screen);
+	const auto pausedIt = this->m_pauseStartByOutput.find (screen);
+	const bool isPaused = pausedIt != this->m_pauseStartByOutput.end ();
+
+	if (shouldPause && !isPaused) {
+	    sLog.debug (
+		"applyPerOutputPause: pausing screen '", screen, "' (perOutput=", detectorIsPerOutput,
+		", coveredCount=", covered.size (), ")"
+	    );
+	    this->m_pauseStartByOutput.emplace (screen, now);
+	    wallpaper->setPause (true);
+	} else if (!shouldPause && isPaused) {
+	    sLog.debug (
+		"applyPerOutputPause: resuming screen '", screen, "' (perOutput=", detectorIsPerOutput,
+		", coveredCount=", covered.size (), ")"
+	    );
+	    const auto pausedDuration = now - pausedIt->second;
+	    auto playlistIt = this->m_activePlaylists.find (screen);
+	    if (playlistIt != this->m_activePlaylists.end ()
+		&& !playlistIt->second.definition.settings.updateOnPause) {
+		playlistIt->second.nextSwitch += pausedDuration;
+		playlistIt->second.lastUpdate += pausedDuration;
+	    }
+	    this->m_pauseStartByOutput.erase (pausedIt);
+	    wallpaper->setPause (false);
+	}
+    }
+
+    // Prune entries for outputs that have disappeared (hot-unplug) so a stale
+    // entry can't keep m_pauseStartByOutput.size() == wallpapers.size() forever.
+    for (auto it = this->m_pauseStartByOutput.begin (); it != this->m_pauseStartByOutput.end ();) {
+	if (wallpapers.find (it->first) == wallpapers.end ()) {
+	    it = this->m_pauseStartByOutput.erase (it);
+	} else {
+	    ++it;
+	}
+    }
+}
+
 void WallpaperApplication::render () {
     static time_t seconds;
     static struct tm* timeinfo;
 
-	if (this->m_isPaused) {
-		usleep (FULLSCREEN_CHECK_WAIT_TIME);
-		if (this->m_fullScreenDetector->anythingFullscreen () && this->m_context.state.general.keepRunning) {
-			return;
-		}
-	    m_renderContext->setPause (false);
+	// update g_Daytime
+	time (&seconds);
+	timeinfo = localtime (&seconds);
+	g_Daytime = static_cast<float>((timeinfo->tm_hour * 60) + timeinfo->tm_min) / (24.0f * 60.0f);
 
-	    // account for paused duration in playlist timers
-	    const auto pausedNow = std::chrono::steady_clock::now ();
-	    const auto pausedDuration = pausedNow - this->m_pauseStart;
+	// keep track of the previous frame's time
+	g_TimeLast = g_Time;
+	// calculate the current time value
+	g_Time = m_videoDriver->getRenderTime ();
+	// update audio recorder
+	m_audioDriver->update ();
+	// update input information
+	m_videoDriver->getInputContext ().update ();
+	// Compute pause transitions BEFORE driving the per-viewport render loop,
+	// so update(viewport) sees the up-to-date m_pauseStartByOutput and can
+	// skip rendering paused outputs on the same frame the transition fires.
+	if (this->m_context.state.general.keepRunning) {
+		this->applyPerOutputPause ();
+	}
+	// process driver events (this also drives the per-viewport render loop;
+	// update(viewport) skips paused outputs so they keep their last frame)
+	m_videoDriver->dispatchEventQueue ();
 
-	    for (auto& [_, playlist] : this->m_activePlaylists) {
-		if (!playlist.definition.settings.updateOnPause) {
-		    playlist.nextSwitch += pausedDuration;
-		    playlist.lastUpdate += pausedDuration;
-		}
-	    }
-
-	    this->m_isPaused = false;
-	} else {
-		// update g_Daytime
-		time (&seconds);
-		timeinfo = localtime (&seconds);
-		g_Daytime = static_cast<float>((timeinfo->tm_hour * 60) + timeinfo->tm_min) / (24.0f * 60.0f);
-
-		// keep track of the previous frame's time
-		g_TimeLast = g_Time;
-		// calculate the current time value
-		g_Time = m_videoDriver->getRenderTime ();
-		// update audio recorder
-		m_audioDriver->update ();
-		// update input information
-		m_videoDriver->getInputContext ().update ();
-		// process driver events
-		m_videoDriver->dispatchEventQueue ();
-
-		if (m_videoDriver->closeRequested ()) {
-			sLog.out ("Stop requested by driver");
-			this->m_context.state.general.keepRunning = false;
-		}
+	if (m_videoDriver->closeRequested ()) {
+		sLog.out ("Stop requested by driver");
+		this->m_context.state.general.keepRunning = false;
+	}
 
 #if DEMOMODE
-		// wait for a full render cycle before actually starting
-		// this gives some extra time for video and web decoders to set themselves up
-		// because of size changes
-		if (m_videoDriver->getFrameCounter () > (uint32_t)this->m_context.settings.render.maximumFPS) {
-			if (!initialized) {
-			width = this->m_renderContext->getWallpapers ().begin ()->second->getWidth ();
-			height = this->m_renderContext->getWallpapers ().begin ()->second->getHeight ();
-			pixels.reserve (width * height * 3);
-			init_encoder ("output.webm", width, height);
-			initialized = true;
-			}
-
-			glBindFramebuffer (
-			GL_FRAMEBUFFER, this->m_renderContext->getWallpapers ().begin ()->second->getWallpaperFramebuffer ()
-			);
-
-			glPixelStorei (GL_PACK_ALIGNMENT, 1);
-			glReadPixels (0, 0, width, height, GL_RGB, GL_UNSIGNED_BYTE, pixels.data ());
-			write_video_frame (pixels.data ());
-			frame++;
-
-			// stop after the given framecount
-			if (frame >= FRAME_COUNT) {
-			this->m_context.state.general.keepRunning = false;
-			}
+	// wait for a full render cycle before actually starting
+	// this gives some extra time for video and web decoders to set themselves up
+	// because of size changes
+	if (m_videoDriver->getFrameCounter () > (uint32_t)this->m_context.settings.render.maximumFPS) {
+		if (!initialized) {
+		width = this->m_renderContext->getWallpapers ().begin ()->second->getWidth ();
+		height = this->m_renderContext->getWallpapers ().begin ()->second->getHeight ();
+		pixels.reserve (width * height * 3);
+		init_encoder ("output.webm", width, height);
+		initialized = true;
 		}
+
+		glBindFramebuffer (
+		GL_FRAMEBUFFER, this->m_renderContext->getWallpapers ().begin ()->second->getWallpaperFramebuffer ()
+		);
+
+		glPixelStorei (GL_PACK_ALIGNMENT, 1);
+		glReadPixels (0, 0, width, height, GL_RGB, GL_UNSIGNED_BYTE, pixels.data ());
+		write_video_frame (pixels.data ());
+		frame++;
+
+		// stop after the given framecount
+		if (frame >= FRAME_COUNT) {
+		this->m_context.state.general.keepRunning = false;
+		}
+	}
 #endif /* DEMOMODE */
-		// check for fullscreen windows and wait until there's none fullscreen
-		if (this->m_fullScreenDetector->anythingFullscreen () && this->m_context.state.general.keepRunning) {
-			this->m_isPaused = true;
-			this->m_pauseStart = std::chrono::steady_clock::now ();
 
-			m_renderContext->setPause (true);
-			return;
-		}
+	const auto& wallpapers = this->m_renderContext->getWallpapers ();
+	const bool allPaused = !wallpapers.empty () && this->m_pauseStartByOutput.size () == wallpapers.size ();
+	if (allPaused) {
+		// Every output is occluded: throttle the main loop the same way the
+		// pre-per-output implementation did, so we don't spin at the maximum
+		// frame rate redrawing held frames.
+		usleep (FULLSCREEN_CHECK_WAIT_TIME);
+		return;
 	}
 
 	this->updatePlaylists ();
@@ -865,7 +943,15 @@ void WallpaperApplication::show () {
 }
 
 void WallpaperApplication::update (Render::Drivers::Output::OutputViewport* viewport) {
-    // render the scene
+    // For paused outputs, skip the entire wallpaper render + EGL swap and only
+    // re-arm the compositor's frame callback (Wayland) so the present cycle
+    // stays alive without burning CPU. CWallpaper::render() also has an
+    // internal m_paused gate as a defensive fallback, but on this path it is
+    // not reached.
+    if (this->m_pauseStartByOutput.contains (viewport->name)) {
+	viewport->pauseTick ();
+	return;
+    }
     m_renderContext->render (viewport);
 }
 

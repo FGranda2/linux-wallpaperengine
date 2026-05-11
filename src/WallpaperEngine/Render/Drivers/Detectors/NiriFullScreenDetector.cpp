@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <ranges>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -22,7 +23,7 @@ namespace {
 constexpr double COVERAGE_THRESHOLD = 0.90;
 
 // Minimum stable hold time before a state transition is reported, to absorb
-// open/resize animation transients.
+// open/resize animation transients. Applied per output independently.
 constexpr auto DEBOUNCE = std::chrono::milliseconds (250);
 
 struct OutputInfo {
@@ -36,17 +37,17 @@ struct WorkspaceInfo {
     bool isActive = false;
 };
 
-bool computeCovered (
+std::unordered_map<std::string, bool> computeCoveredPerOutput (
     const std::unordered_map<std::string, OutputInfo>& outputs, const std::vector<WorkspaceInfo>& workspaces,
     const nlohmann::json& windows
 ) {
-    if (outputs.empty ()) {
-	return false;
-    }
+    std::unordered_map<std::string, bool> result;
+    result.reserve (outputs.size ());
 
     for (const auto& [name, out] : outputs) {
 	if (out.width <= 0.0 || out.height <= 0.0) {
-	    return false;
+	    result.emplace (name, false);
+	    continue;
 	}
 	const double area = out.width * out.height;
 
@@ -58,7 +59,8 @@ bool computeCovered (
 	    }
 	}
 	if (activeWs == nullptr) {
-	    return false;
+	    result.emplace (name, false);
+	    continue;
 	}
 
 	double sum = 0.0;
@@ -98,18 +100,16 @@ bool computeCovered (
 	}
 
 	const double ratio = sum / area;
-	if (ratio < COVERAGE_THRESHOLD) {
-	    return false;
-	}
+	result.emplace (name, ratio >= COVERAGE_THRESHOLD);
     }
-    return true;
+
+    return result;
 }
 
 } // namespace
 
 NiriFullScreenDetector::NiriFullScreenDetector (Application::ApplicationContext& appContext) :
     FullScreenDetector (appContext) {
-    m_lastChange = std::chrono::steady_clock::now ();
     recompute ();
 
     m_ipc = std::make_unique<NiriIPC> ([this] (const nlohmann::json&) {
@@ -130,11 +130,14 @@ void NiriFullScreenDetector::recompute () {
     const auto windowsJ = NiriIPC::snapshot ("Windows");
 
     if (!outputsJ || !workspacesJ || !windowsJ) {
-	sLog.debug ("NiriFullScreenDetector: snapshot failed; treating as not covered");
+	sLog.debug ("NiriFullScreenDetector: snapshot failed; treating all outputs as not covered");
+	const auto now = std::chrono::steady_clock::now ();
 	std::lock_guard lock (m_mutex);
-	if (m_rawCovered) {
-	    m_rawCovered = false;
-	    m_lastChange = std::chrono::steady_clock::now ();
+	for (auto& [name, state] : m_perOutput) {
+	    if (state.raw) {
+		state.raw = false;
+		state.lastChange = now;
+	    }
 	}
 	return;
     }
@@ -173,23 +176,63 @@ void NiriFullScreenDetector::recompute () {
 	}
     }
 
-    const bool covered = computeCovered (outputs, workspaces, *windowsJ);
+    const auto coveredMap = computeCoveredPerOutput (outputs, workspaces, *windowsJ);
 
+    const auto now = std::chrono::steady_clock::now ();
     std::lock_guard lock (m_mutex);
-    if (covered != m_rawCovered) {
-	m_rawCovered = covered;
-	m_lastChange = std::chrono::steady_clock::now ();
-	sLog.debug ("NiriFullScreenDetector: raw covered = ", covered);
+
+    // Update raw state and timestamps for outputs present in this snapshot.
+    for (const auto& [name, covered] : coveredMap) {
+	auto [it, inserted] = m_perOutput.try_emplace (name);
+	if (inserted) {
+	    it->second.raw = covered;
+	    it->second.debounced = false;
+	    it->second.lastChange = now;
+	    sLog.debug (
+		"NiriFullScreenDetector: registered output '", name, "' raw covered = ", covered, " (new)"
+	    );
+	} else if (it->second.raw != covered) {
+	    it->second.raw = covered;
+	    it->second.lastChange = now;
+	    sLog.debug ("NiriFullScreenDetector: '", name, "' raw covered = ", covered);
+	}
+    }
+
+    // Prune outputs that have disappeared from Niri's snapshot (hot-unplug).
+    for (auto it = m_perOutput.begin (); it != m_perOutput.end ();) {
+	if (coveredMap.find (it->first) == coveredMap.end ()) {
+	    it = m_perOutput.erase (it);
+	} else {
+	    ++it;
+	}
+    }
+}
+
+void NiriFullScreenDetector::advanceDebounceLocked () const {
+    const auto now = std::chrono::steady_clock::now ();
+    for (auto& [name, state] : m_perOutput) {
+	if (state.debounced != state.raw && (now - state.lastChange) >= DEBOUNCE) {
+	    state.debounced = state.raw;
+	}
     }
 }
 
 bool NiriFullScreenDetector::anythingFullscreen () const {
     std::lock_guard lock (m_mutex);
-    const auto elapsed = std::chrono::steady_clock::now () - m_lastChange;
-    if (elapsed >= DEBOUNCE && m_debouncedCovered != m_rawCovered) {
-	m_debouncedCovered = m_rawCovered;
+    advanceDebounceLocked ();
+    return std::ranges::any_of (m_perOutput, [] (const auto& entry) { return entry.second.debounced; });
+}
+
+std::optional<std::unordered_set<std::string>> NiriFullScreenDetector::coveredOutputs () const {
+    std::unordered_set<std::string> covered;
+    std::lock_guard lock (m_mutex);
+    advanceDebounceLocked ();
+    for (const auto& [name, state] : m_perOutput) {
+	if (state.debounced) {
+	    covered.insert (name);
+	}
     }
-    return m_debouncedCovered;
+    return covered;
 }
 
 void NiriFullScreenDetector::reset () { recompute (); }

@@ -2,6 +2,7 @@
 
 #include <chrono>
 #include <random>
+#include <unordered_map>
 
 #include "WallpaperEngine/Application/ApplicationContext.h"
 #include "WallpaperEngine/Assets/AssetLocator.h"
@@ -146,6 +147,13 @@ private:
 
     void initializePlaylists ();
     void updatePlaylists ();
+    /**
+     * Diffs the detector's current per-output coverage against m_pauseStartByOutput
+     * and drives wallpaper->setPause()/playlist-timer compensation accordingly.
+     * For detectors that don't expose per-output state (X11/Wayland), the global
+     * anythingFullscreen() value is applied uniformly to every known output.
+     */
+    void applyPerOutputPause ();
     void advancePlaylist (
 	const std::string& screen, ActivePlaylist& playlist, const std::chrono::steady_clock::time_point& now
     );
@@ -170,10 +178,12 @@ private:
     std::unique_ptr<WallpaperEngine::Render::Drivers::Detectors::FullScreenDetector> m_fullScreenDetector = nullptr;
     std::unique_ptr<WallpaperEngine::WebBrowser::WebBrowserContext> m_browserContext = nullptr;
     std::mt19937 m_playlistRng { std::random_device {}() };
-    bool m_isPaused = false;
     bool m_screenShotTaken = false;
     uint32_t m_nextFrameScreenshot = 0;
-    std::chrono::steady_clock::time_point m_pauseStart {};
+    // Presence in the map indicates the output is currently paused; the value is
+    // the steady-clock moment pausing began, used to shift that screen's playlist
+    // timers on resume.
+    std::unordered_map<std::string, std::chrono::steady_clock::time_point> m_pauseStartByOutput {};
     GLuint m_destinationFramebuffer = 0;
 };
 } // namespace WallpaperEngine::Application

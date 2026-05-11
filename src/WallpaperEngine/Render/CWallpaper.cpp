@@ -194,7 +194,13 @@ void CWallpaper::render (const glm::ivec4& viewport, const bool vflip) {
 #if !NDEBUG
     glPushDebugGroup (GL_DEBUG_SOURCE_APPLICATION, 0, -1, "Rendering scene");
 #endif /* !NDEBUG */
-    this->renderFrame (viewport);
+    // Skip wallpaper-state advancement while paused. The existing wallpaper
+    // texture (containing the last drawn frame) is still composited below, so
+    // the output keeps presenting a stable frozen image while the per-viewport
+    // swap chain (and Wayland frame callbacks) stays alive.
+    if (!this->m_paused) {
+	this->renderFrame (viewport);
+    }
 #if !NDEBUG
     glPopDebugGroup ();
     glPushDebugGroup (GL_DEBUG_SOURCE_APPLICATION, 0, -1, "Rendering scene to output");
@@ -241,7 +247,7 @@ void CWallpaper::render (const glm::ivec4& viewport, const bool vflip) {
 #endif /* !NDEBUG */
 }
 
-void CWallpaper::setPause (bool newState) { }
+void CWallpaper::setPause (bool newState) { this->m_paused = newState; }
 
 void CWallpaper::setupFramebuffers () {
     const uint32_t width = this->getWidth ();

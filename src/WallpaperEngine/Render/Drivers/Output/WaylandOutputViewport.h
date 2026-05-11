@@ -64,6 +64,15 @@ namespace Output {
 	void swapOutput () override;
 
 	/**
+	 * Re-arms the wl_surface_frame callback and commits the surface without
+	 * doing GL work or swapping buffers. Used while the wallpaper is paused
+	 * so the compositor keeps delivering frame events (otherwise the
+	 * callback chain dies and the viewport can never resume) but no
+	 * rendering, EGL swap, or buffer attach happens.
+	 */
+	void pauseTick () override;
+
+	/**
 	 * Updates the viewport size
 	 */
 	void resize ();

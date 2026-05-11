@@ -36,7 +36,6 @@ namespace Render {
 
 	void render (Drivers::Output::OutputViewport* viewport);
 	void setWallpaper (const std::string& display, std::shared_ptr<CWallpaper> wallpaper);
-	void setPause (bool newState) const;
 	[[nodiscard]] Input::InputContext& getInputContext () const;
 	[[nodiscard]] const WallpaperApplication& getApp () const;
 	[[nodiscard]] const Drivers::VideoDriver& getDriver () const;

@@ -165,6 +165,14 @@ protected:
 
     GLuint m_vaoBuffer = GL_NONE;
 
+    /**
+     * When true, render() skips renderFrame() and only composites the existing
+     * wallpaper texture to the destination framebuffer. The previously rendered
+     * frame is re-presented every cycle, keeping the Wayland frame-callback
+     * chain alive while visibly freezing the wallpaper.
+     */
+    bool m_paused = false;
+
 private:
     /** The texture used for the scene output */
     GLuint m_texCoordBuffer = GL_NONE;
