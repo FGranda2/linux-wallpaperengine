@@ -16,10 +16,18 @@ using ApproxLights = decltype (SceneData::approxLights);
 
 /**
  * Radial falloff of an approximate light at a given distance (see computeApproxLights).
+ *
+ * Inverse-square with the authored radius as the falloff *scale* (not a hard cutoff): nearby
+ * lights read as local colour casts while distant, high-z lights keep a broad, gentle gradient —
+ * a hard (1 - d/radius) cutoff cannot serve both at once. FALLOFF_SCALE controls how fast the
+ * curve drops; the exponent nudges it per-light. Must match the injected GLSL in
+ * ShaderUnit::preprocessRequires.
  */
+constexpr float FALLOFF_SCALE = 16.0f;
+
 float approxLightFalloff (const float distance, const float radius, const float exponent) {
-    const float linear = std::clamp (1.0f - distance / std::max (radius, 1.0f), 0.0f, 1.0f);
-    return std::pow (linear, exponent);
+    const float ratio = distance / std::max (radius, 1.0f);
+    return 1.0f / (1.0f + FALLOFF_SCALE * ratio * ratio * std::max (exponent, 0.0001f));
 }
 
 /**

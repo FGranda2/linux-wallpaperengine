@@ -340,11 +340,12 @@ void ShaderUnit::preprocessRequires () {
 		"uniform vec4 g_LightApproxPosition1; uniform vec4 g_LightApproxColor1; "
 		"uniform vec4 g_LightApproxPosition2; uniform vec4 g_LightApproxColor2; "
 		"uniform vec4 g_LightApproxPosition3; uniform vec4 g_LightApproxColor3; "
+		// Inverse-square falloff with the authored radius as scale — must match
+		// WallpaperParser::approxLightFalloff (16.0 = FALLOFF_SCALE); the exponent clamp keeps
+		// the divisor positive for all-zero unused slots
 		"vec3 ApproxLightContribution(vec4 lightPos, vec4 lightColor, vec3 worldPos) { "
-		"float atten = clamp(1.0 - distance(lightPos.xyz, worldPos) / max(lightPos.w, 1.0), 0.0, 1.0); "
-		// pow(0, 0) is undefined in GLSL (NaN on some drivers) and unused slots are all-zero,
-		// so keep the exponent strictly positive
-		"return lightColor.rgb * pow(atten, max(lightColor.w, 0.0001)); } "
+		"float ratio = distance(lightPos.xyz, worldPos) / max(lightPos.w, 1.0); "
+		"return lightColor.rgb / (1.0 + 16.0 * ratio * ratio * max(lightColor.w, 0.0001)); } "
 		"vec3 PerformLighting_V1(vec3 worldPos, vec3 albedo, vec3 normal, vec3 viewDir, "
 		"vec3 specularTint, vec3 f0, float roughness, float metallic) { "
 		"if (g_LightApproxCount < 0.5) return albedo; "
