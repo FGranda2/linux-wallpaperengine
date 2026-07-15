@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <memory>
 
 #include <glm/glm.hpp>
@@ -43,6 +44,28 @@ struct SceneData {
 	glm::vec3 skylight;
 	UserSettingUniquePtr clear;
     } colors;
+
+    /**
+     * Approximation of the scene's light sources for LIGHTING-enabled materials.
+     *
+     * Full per-light shading (shadows, normals, specular) is not implemented; instead every
+     * point/tube light is reduced to a radially attenuated colour contribution evaluated
+     * per-pixel by an injected PerformLighting_V1 (see ShaderUnit::preprocessRequires).
+     * Colours are premultiplied by intensity and peak-normalised on the CPU so the brightest
+     * lit spot of the scene plane reaches full strength without saturating everything.
+     */
+    struct ApproxLight {
+	/** xyz = light position in scene-centred coordinates (x right, y up, z depth), w = radius */
+	glm::vec4 position { 0.0f };
+	/** rgb = colour * intensity, peak-normalised across the scene; w = falloff exponent */
+	glm::vec4 color { 0.0f };
+    };
+    static constexpr std::size_t MaxApproxLights = 4;
+    struct {
+	std::array<ApproxLight, MaxApproxLights> slots;
+	/** Number of used slots; 0 means no lights and LIGHTING materials render plain albedo */
+	int count;
+    } approxLights;
     /**
      * Camera configuration
      */
@@ -103,6 +126,12 @@ struct SceneData {
 	    float farz;
 	    float fov;
 	} projection;
+
+	/**
+	 * Scene zoom factor (general.zoom). Values above 1 render the scene zoomed in, giving the
+	 * edges extra margin so camera parallax displacement never exposes layer borders.
+	 */
+	float zoom;
     } camera;
 
     ObjectList objects;

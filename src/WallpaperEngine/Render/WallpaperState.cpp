@@ -141,6 +141,8 @@ WallpaperState::TextureUVsScaling WallpaperState::getTextureUVsScaling () const 
 
 uint32_t WallpaperState::getClampingMode () const { return this->m_clampingMode; }
 
+void WallpaperState::setZoom (const float zoom) { this->m_zoom = std::max (zoom, 1.0f); }
+
 void WallpaperState::setTextureUVsStrategy (WallpaperState::TextureUVsScaling strategy) {
     this->m_textureUVsMode = strategy;
 }
@@ -182,5 +184,21 @@ void WallpaperState::updateState (
                 This message is for developers, if you are just user it's a bug."
 	    );
 	    break;
+    }
+
+    // Presentation zoom (scene general.zoom): shrink the UV window around its center so only the
+    // central 1/zoom of the wallpaper texture is shown. The hidden margin lets camera parallax
+    // displace layers without exposing their borders. Applied after the scaling mode so it
+    // composes with any of them (and preserves any V flip since the window keeps its orientation).
+    if (this->m_zoom > 1.0f) {
+	const float uCenter = (this->m_UVs.ustart + this->m_UVs.uend) / 2.0f;
+	const float vCenter = (this->m_UVs.vstart + this->m_UVs.vend) / 2.0f;
+	const float uHalf = (this->m_UVs.uend - this->m_UVs.ustart) / (2.0f * this->m_zoom);
+	const float vHalf = (this->m_UVs.vend - this->m_UVs.vstart) / (2.0f * this->m_zoom);
+
+	this->m_UVs.ustart = uCenter - uHalf;
+	this->m_UVs.uend = uCenter + uHalf;
+	this->m_UVs.vstart = vCenter - vHalf;
+	this->m_UVs.vend = vCenter + vHalf;
     }
 }

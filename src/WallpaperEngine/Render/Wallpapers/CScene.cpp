@@ -43,6 +43,12 @@ CScene::CScene (
     // TODO: CONVERSION
     this->m_camera->setOrthogonalProjection (width, height);
 
+    // Honor the scene's zoom at presentation time: the scene renders unzoomed to its FBO and the
+    // final composite samples the central 1/zoom window. This keeps a hidden margin at the edges
+    // so camera parallax can displace layers without exposing their borders, without disturbing
+    // any screen-space effect passes (which a zoomed camera projection would).
+    this->setPresentationZoom (scene->camera.zoom);
+
     // setup framebuffers here as they're required for the scene setup
     this->setupFramebuffers ();
 

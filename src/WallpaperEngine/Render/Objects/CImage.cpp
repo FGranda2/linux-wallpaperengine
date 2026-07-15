@@ -398,6 +398,29 @@ void CImage::setup () {
     this->m_initialized = true;
 }
 
+bool CImage::isAncestryVisible () const {
+    std::optional<int> parentId = this->m_image.parent;
+
+    while (parentId.has_value ()) {
+	const CObject* parent = this->getScene ().getObject (parentId.value ());
+	if (parent == nullptr) {
+	    break;
+	}
+
+	const Object& parentObject = parent->getObject ();
+	if (parentObject.is<Image> ()) {
+	    const Image* parentImage = parentObject.as<Image> ();
+	    if (parentImage->visible != nullptr && !parentImage->visible->value->getBool ()) {
+		return false;
+	    }
+	}
+
+	parentId = parentObject.parent;
+    }
+
+    return true;
+}
+
 void CImage::setupPasses () {
     // do a pass on everything and setup proper inputs and values
     std::shared_ptr<const CFBO> drawTo = this->m_currentMainFBO;
@@ -420,8 +443,11 @@ void CImage::setupPasses () {
 	    = (first) ? &this->m_modelViewProjectionCopyInverse : &this->m_modelViewProjectionPassInverse;
 	first = false;
 
-	pass->setModelMatrix (&this->m_modelMatrix);
-	pass->setViewProjectionMatrix (&this->m_viewProjectionMatrix);
+	// LIGHTING/REFLECTION vertex shaders derive gl_Position from g_ModelMatrix * g_ViewProjectionMatrix
+	// rather than g_ModelViewProjectionMatrix. The copy/pass passes work in texture space, so the
+	// texture-space matrices below are correct for them; the screen pass overrides these (see below).
+	const glm::mat4* modelMatrix = &this->m_modelMatrix;
+	const glm::mat4* viewProjectionMatrix = &this->m_viewProjectionMatrix;
 
 	// set viewport and target texture if needed
 	if (pass->getTarget ().has_value ()) {
@@ -438,13 +464,22 @@ void CImage::setupPasses () {
 	}
 	// determine if it's the last element in the list as this is a screen-copy-like process
 	// TODO: PROPERLY CHECK IF THIS IS ALL THAT'S NEEDED
-	else if (std::next (cur) == end && this->getImage ().visible->value->getBool ()) {
+	else if (std::next (cur) == end && this->getImage ().visible->value->getBool () && this->isAncestryVisible ()) {
 	    // TODO: PROPERLY CHECK EFFECT'S VISIBILITY AND TAKE IT INTO ACCOUNT
 	    spacePosition = this->getSceneSpacePosition ();
 	    drawTo = this->getScene ().getFBO ();
 	    projection = &this->m_modelViewProjectionScreen;
 	    inverseProjection = &this->m_modelViewProjectionScreenInverse;
+	    // The screen pass feeds scene-space vertices, so a LIGHTING/REFLECTION shader needs
+	    // g_ModelMatrix * g_ViewProjectionMatrix to equal the screen MVP. Use identity for the model
+	    // and the screen MVP for the view-projection; otherwise the texture-space ortho(0..size) model
+	    // matrix mis-projects the quad and only its left half lands on screen.
+	    modelMatrix = &this->m_screenModelMatrix;
+	    viewProjectionMatrix = &this->m_modelViewProjectionScreen;
 	}
+
+	pass->setModelMatrix (modelMatrix);
+	pass->setViewProjectionMatrix (viewProjectionMatrix);
 
 	pass->setDestination (drawTo);
 	pass->setInput (asInput);
@@ -558,7 +593,7 @@ void CImage::updateScreenSpacePosition () {
 	const glm::vec2 depth = this->getImage ().parallaxDepth->value->getVec2 ();
 	const glm::vec2* displacement = this->getScene ().getParallaxDisplacement ();
 	float x = (depth.x + parallaxAmount) * displacement->x * this->getSize ().x;
-	float y = (depth.y + parallaxAmount) * displacement->y * this->getSize ().x;
+	float y = (depth.y + parallaxAmount) * displacement->y * this->getSize ().y;
 	mvp = glm::translate (mvp, { x, y, 0.0f });
     }
 

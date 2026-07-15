@@ -63,6 +63,18 @@ protected:
 
     void updateScreenSpacePosition ();
 
+    /**
+     * Walks the parent chain and reports whether every ancestor is visible.
+     *
+     * Visibility in Wallpaper Engine is hierarchical: hiding a group hides everything parented to
+     * it. The engine only stores each object's own `visible` flag, so without this an invisible
+     * group (e.g. a disabled music-player widget) still renders its children. Self-visibility is
+     * checked separately by the caller.
+     *
+     * @return false if any ancestor image is hidden, true otherwise (including when there is no parent).
+     */
+    [[nodiscard]] bool isAncestryVisible () const;
+
 private:
     GLuint m_sceneSpacePosition;
     GLuint m_copySpacePosition;
@@ -79,6 +91,8 @@ private:
 
     glm::mat4 m_modelMatrix = {};
     glm::mat4 m_viewProjectionMatrix = {};
+    /** Identity model matrix used for the screen pass so LIGHTING shaders project scene-space vertices correctly */
+    glm::mat4 m_screenModelMatrix = glm::mat4 (1.0f);
 
     std::shared_ptr<const CFBO> m_mainFBO = nullptr;
     std::shared_ptr<const CFBO> m_subFBO = nullptr;

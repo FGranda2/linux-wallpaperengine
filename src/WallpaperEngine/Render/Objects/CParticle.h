@@ -235,7 +235,9 @@ private:
     // Rope renderer (rope + ropetrail both use genericropeparticle shader)
     bool m_useRopeRenderer { false };
     int m_ropeSubdivision { 4 }; // Catmull-Rom subdivisions between points (smoothing)
-    int m_ropeSegments { 4 }; // ropetrail: historical position snapshots per particle
+    int m_ropeSegments { 4 }; // ropetrail: points per particle trail ribbon
+    bool m_ropeFadeAlpha { false }; // ropetrail: fade alpha towards the trail tail
+    bool m_ropeFadeSize { false }; // ropetrail: shrink size towards the trail tail
     float m_ropeUVScale { 1.0f };
     bool m_ropeUVScrolling { false };
     bool m_ropeUVSmoothing { true }; // rope only

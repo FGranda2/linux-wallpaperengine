@@ -156,6 +156,12 @@ protected:
      */
     void setupFramebuffers ();
 
+    /**
+     * Sets the presentation zoom for the final composite (see WallpaperState::setZoom).
+     * Used by scenes to honor the scene file's general.zoom setting.
+     */
+    void setPresentationZoom (float zoom);
+
     const Wallpaper& m_wallpaperData;
 
     [[nodiscard]] const Wallpaper& getWallpaperData () const;

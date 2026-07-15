@@ -266,6 +266,8 @@ AudioContext& CWallpaper::getAudioContext () const { return this->m_audioContext
 
 const WallpaperState& CWallpaper::getState () const { return this->m_state; }
 
+void CWallpaper::setPresentationZoom (const float zoom) { this->m_state.setZoom (zoom); }
+
 std::shared_ptr<const CFBO> CWallpaper::findFBO (const std::string& name) const {
     const auto fbo = this->find (name);
 

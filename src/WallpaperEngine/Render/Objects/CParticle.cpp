@@ -70,6 +70,8 @@ CParticle::CParticle (Wallpapers::CScene& scene, const Particle& particle) :
 		m_useTrailRenderer = true;
 		m_trailLength = renderer.length;
 		m_ropeSegments = std::max (2, static_cast<int> (renderer.segments));
+		m_ropeFadeAlpha = renderer.fadeAlpha;
+		m_ropeFadeSize = renderer.fadeSize;
 	    }
 	} else if (renderer.name == "spritetrail") {
 	    // spritetrail uses genericparticle with TRAILRENDERER combo
@@ -91,9 +93,15 @@ CParticle::CParticle (Wallpapers::CScene& scene, const Particle& particle) :
 
     // Calculate buffer sizes based on renderer type
     if (m_useRopeRenderer) {
-	// Rope: connects N particles with (N-1) segments, each subdivided into sub-segments
-	const int subdivision = std::max (1, m_ropeSubdivision);
-	const int maxSubSegments = std::max (1, static_cast<int> (m_maxParticles - 1)) * subdivision;
+	int maxSubSegments;
+	if (m_useTrailRenderer) {
+	    // Rope trail: every particle gets its own straight ribbon of (segments - 1) quads
+	    maxSubSegments = static_cast<int> (m_maxParticles) * (m_ropeSegments - 1);
+	} else {
+	    // Rope: connects N particles with (N-1) segments, each subdivided into sub-segments
+	    const int subdivision = std::max (1, m_ropeSubdivision);
+	    maxSubSegments = std::max (1, static_cast<int> (m_maxParticles - 1)) * subdivision;
+	}
 	m_vertices.resize (maxSubSegments * 4 * ROPE_FLOATS_PER_VERTEX);
 	m_indices.resize (maxSubSegments * 6);
     } else {
@@ -1894,6 +1902,14 @@ void CParticle::updateMatrices () {
 
     // Update g_RenderVar0: trail parameters (.x=length, .y=maxLength, .z=minLength)
     m_renderVar0 = glm::vec4 (m_trailLength, m_trailMaxLength, m_trailMinLength, 0.0f);
+    if (m_useRopeRenderer && m_useTrailRenderer) {
+	// genericropeparticle's TRAILRENDERER branch reads g_RenderVar0.z as the fractional
+	// spawn timer of the newest trail element (SegmentUVTimeOffset) and .w as the maximum
+	// element count (SegmentMaxCount). Our synthesized trails are always fully spawned:
+	// .z=1 gives the head quad its full UV slice and .w=0 disables the "still spawning"
+	// UV extension (trailLength attribute is always >= 1 > 0).
+	m_renderVar0 = glm::vec4 (0.0f, 0.0f, 1.0f, 0.0f);
+    }
 
     // Update g_RenderVar1: spritesheet params (.x=frameWidth, .y=frameHeight, .z=numFrames, .w=textureRatio)
     if (m_spritesheetFrames > 0 && m_spritesheetCols > 0 && m_spritesheetRows > 0) {
@@ -2081,7 +2097,10 @@ void CParticle::renderSprites () {
 }
 
 void CParticle::renderRope () {
-    if (m_particleCount < 2 || m_pass == nullptr) {
+    // A rope trail draws one independent ribbon per particle, so one particle is enough;
+    // a physical rope needs at least two particles to span a segment
+    const uint32_t minCount = m_useTrailRenderer ? 1 : 2;
+    if (m_particleCount < minCount || m_pass == nullptr) {
 	return;
     }
 
@@ -2089,10 +2108,6 @@ void CParticle::renderRope () {
     // compaction in update(). All particles in [0, m_particleCount) are alive.
     const uint32_t aliveCount = m_particleCount;
 
-    // Build vertex data with Catmull-Rom spline subdivision.
-    // Each segment between consecutive particles is subdivided into m_ropeSubdivision
-    // sub-segments for smooth curves instead of harsh corners at particle positions.
-    //
     // Rope vertex layout (26 floats per vertex, THICKFORMAT):
     // [0-3]   a_PositionVec4:   startPos.xyz, sizeStart
     // [4-7]   a_TexCoordVec4:   endPos.xyz, trailLength
@@ -2102,81 +2117,134 @@ void CParticle::renderRope () {
     // [20-21] a_TexCoordC4:     uvs.xy
     // [22-25] a_Color:          colorStart.rgba
 
-    const uint32_t numSegments = aliveCount - 1;
-    const int subdivision = std::max (1, m_ropeSubdivision);
+    // Point buffers holding one or more polylines, each an independent ribbon.
+    // "rope" chains every particle into a single spline-smoothed polyline;
+    // "ropetrail" builds one short straight polyline per particle.
+    std::vector<glm::vec3> splinePositions;
+    std::vector<float> splineSizes;
+    std::vector<glm::vec4> splineColors; // rgba
+    // Start index of each polyline in the point buffers (contiguous ranges)
+    std::vector<uint32_t> polylineStarts;
 
-    // Catmull-Rom spline evaluation
-    auto catmullRom = [] (const glm::vec3& p0, const glm::vec3& p1, const glm::vec3& p2, const glm::vec3& p3,
-			  float t) -> glm::vec3 {
-	float t2 = t * t, t3 = t2 * t;
-	return 0.5f
-	    * ((2.0f * p1) + (-p0 + p2) * t + (2.0f * p0 - 5.0f * p1 + 4.0f * p2 - p3) * t2
-	       + (-p0 + 3.0f * p1 - 3.0f * p2 + p3) * t3);
-    };
+    if (m_useTrailRenderer) {
+	// ropetrail: each particle is an independent streak trailing behind its position
+	// along the velocity direction. "length" is the trail duration in seconds of travel
+	// (trail span = velocity * length), "segments" is the ribbon's point count. Points are
+	// ordered head -> tail so trail element 0 sits at the particle head, matching the
+	// shader's TRAILRENDERER branch where element 0 starts at UV 0.
+	const auto pointsPerTrail = static_cast<uint32_t> (m_ropeSegments);
+	splinePositions.reserve (aliveCount * pointsPerTrail);
+	splineSizes.reserve (aliveCount * pointsPerTrail);
+	splineColors.reserve (aliveCount * pointsPerTrail);
+	polylineStarts.reserve (aliveCount + 1);
 
-    // First pass: evaluate spline to get all interpolated points
-    const uint32_t totalPoints = numSegments * subdivision + 1;
-    // Store position, size, color (rgba) per point = 3 + 1 + 4 = 8 floats
-    std::vector<glm::vec3> splinePositions (totalPoints);
-    std::vector<float> splineSizes (totalPoints);
-    std::vector<glm::vec4> splineColors (totalPoints); // rgba
+	for (uint32_t i = 0; i < aliveCount; i++) {
+	    const auto& particle = m_particles[i];
+	    const glm::vec3 trailVec = particle.velocity * m_trailLength;
+	    // A stationary particle's trail degenerates to a point — nothing to draw
+	    if (glm::dot (trailVec, trailVec) < 1e-6f) {
+		continue;
+	    }
 
-    for (uint32_t i = 0; i < numSegments; i++) {
-	const auto& p1 = m_particles[i];
-	const auto& p2 = m_particles[i + 1];
-	const auto& p0 = (i > 0) ? m_particles[i - 1] : p1;
-	const auto& p3 = (i + 2 < aliveCount) ? m_particles[i + 2] : p2;
-
-	for (int k = 0; k < subdivision; k++) {
-	    float t = static_cast<float> (k) / static_cast<float> (subdivision);
-	    uint32_t idx = i * subdivision + k;
-
-	    splinePositions[idx] = catmullRom (p0.position, p1.position, p2.position, p3.position, t);
-	    splineSizes[idx] = glm::mix (p1.size, p2.size, t);
-	    splineColors[idx] = glm::mix (glm::vec4 (p1.color, p1.alpha), glm::vec4 (p2.color, p2.alpha), t);
+	    polylineStarts.push_back (static_cast<uint32_t> (splinePositions.size ()));
+	    for (uint32_t k = 0; k < pointsPerTrail; k++) {
+		const float t = static_cast<float> (k) / static_cast<float> (pointsPerTrail - 1);
+		splinePositions.push_back (particle.position - trailVec * t);
+		splineSizes.push_back (m_ropeFadeSize ? particle.size * (1.0f - t) : particle.size);
+		const float alpha = m_ropeFadeAlpha ? particle.alpha * (1.0f - t) : particle.alpha;
+		splineColors.emplace_back (particle.color, alpha);
+	    }
 	}
-    }
-    // Last point is the final particle
-    {
+
+	if (polylineStarts.empty ()) {
+	    return;
+	}
+    } else {
+	// rope: build a single polyline through all particles with Catmull-Rom subdivision.
+	// Each segment between consecutive particles is subdivided into m_ropeSubdivision
+	// sub-segments for smooth curves instead of harsh corners at particle positions.
+	const uint32_t numSegments = aliveCount - 1;
+	const int subdivision = std::max (1, m_ropeSubdivision);
+
+	// Catmull-Rom spline evaluation
+	auto catmullRom = [] (const glm::vec3& p0, const glm::vec3& p1, const glm::vec3& p2, const glm::vec3& p3,
+			      float t) -> glm::vec3 {
+	    float t2 = t * t, t3 = t2 * t;
+	    return 0.5f
+		* ((2.0f * p1) + (-p0 + p2) * t + (2.0f * p0 - 5.0f * p1 + 4.0f * p2 - p3) * t2
+		   + (-p0 + 3.0f * p1 - 3.0f * p2 + p3) * t3);
+	};
+
+	// Evaluate spline to get all interpolated points
+	const uint32_t totalPoints = numSegments * subdivision + 1;
+	splinePositions.resize (totalPoints);
+	splineSizes.resize (totalPoints);
+	splineColors.resize (totalPoints);
+	polylineStarts.push_back (0);
+
+	for (uint32_t i = 0; i < numSegments; i++) {
+	    const auto& p1 = m_particles[i];
+	    const auto& p2 = m_particles[i + 1];
+	    const auto& p0 = (i > 0) ? m_particles[i - 1] : p1;
+	    const auto& p3 = (i + 2 < aliveCount) ? m_particles[i + 2] : p2;
+
+	    for (int k = 0; k < subdivision; k++) {
+		float t = static_cast<float> (k) / static_cast<float> (subdivision);
+		uint32_t idx = i * subdivision + k;
+
+		splinePositions[idx] = catmullRom (p0.position, p1.position, p2.position, p3.position, t);
+		splineSizes[idx] = glm::mix (p1.size, p2.size, t);
+		splineColors[idx] = glm::mix (glm::vec4 (p1.color, p1.alpha), glm::vec4 (p2.color, p2.alpha), t);
+	    }
+	}
+	// Last point is the final particle
 	const auto& pLast = m_particles[aliveCount - 1];
 	splinePositions[totalPoints - 1] = pLast.position;
 	splineSizes[totalPoints - 1] = pLast.size;
 	splineColors[totalPoints - 1] = glm::vec4 (pLast.color, pLast.alpha);
     }
 
-    // Second pass: build quads from consecutive spline points.
+    // Trailing sentinel so each polyline's range is [polylineStarts[i], polylineStarts[i+1])
+    polylineStarts.push_back (static_cast<uint32_t> (splinePositions.size ()));
+
+    // Build quads from consecutive points of each polyline.
     // The shader computes UV.v from trailPosition / (trailLength - 1), consuming
     // 1/(trailLength-1) of UV space per quad. Express trailLength and trailPosition
     // in sub-segment units so each sub-segment quad gets the correct UV slice.
     // UV scale divides the effective length, making UVs exceed [0,1] → texture repeats.
     uint32_t vertexIndex = 0;
     uint32_t indexOffset = 0;
-    const uint32_t totalSubSegments = totalPoints - 1;
     const float uvScale = (m_ropeUVScale > 0.0f) ? m_ropeUVScale : 1.0f;
-    const float trailLength = static_cast<float> (totalSubSegments) / uvScale + 1.0f;
-    const float usableLength = trailLength - 1.0f;
 
     // UV smoothing: distribute UV proportional to arc length instead of uniform index.
     // Per wiki: only when all particle lifetimes match and scrolling is disabled.
-    const bool useSmoothing = m_ropeUVSmoothing && m_uniformLifetimes && !m_ropeUVScrolling;
+    // Straight trail ribbons have uniformly spaced points, so smoothing is a no-op there.
+    const bool useSmoothing = !m_useTrailRenderer && m_ropeUVSmoothing && m_uniformLifetimes && !m_ropeUVScrolling;
     std::vector<float> cumulativeArcLength;
-    float totalArcLength = 0.0f;
 
-    if (useSmoothing) {
-	cumulativeArcLength.resize (totalPoints, 0.0f);
-	for (uint32_t i = 1; i < totalPoints; i++) {
-	    totalArcLength += glm::distance (splinePositions[i], splinePositions[i - 1]);
-	    cumulativeArcLength[i] = totalArcLength;
+    for (uint32_t pl = 0; pl + 1 < polylineStarts.size (); pl++) {
+	const uint32_t first = polylineStarts[pl];
+	const uint32_t last = polylineStarts[pl + 1] - 1; // last point of this polyline
+	const uint32_t subSegments = last - first; // quads in this polyline
+	const float trailLength = static_cast<float> (subSegments) / uvScale + 1.0f;
+	const float usableLength = trailLength - 1.0f;
+
+	float totalArcLength = 0.0f;
+	if (useSmoothing) {
+	    cumulativeArcLength.assign (subSegments + 1, 0.0f);
+	    for (uint32_t i = 1; i <= subSegments; i++) {
+		totalArcLength += glm::distance (splinePositions[first + i], splinePositions[first + i - 1]);
+		cumulativeArcLength[i] = totalArcLength;
+	    }
 	}
-    }
 
-    // UV scrolling: shift UV along the rope over time (1 UV cycle per second)
-    float scrollOffset = 0.0f;
-    if (m_ropeUVScrolling && usableLength > 0.0f) {
-	scrollOffset = std::fmod (static_cast<float> (g_Time), 10000.0f) * usableLength;
-    }
+	// UV scrolling: shift UV along the rope over time (1 UV cycle per second)
+	float scrollOffset = 0.0f;
+	if (m_ropeUVScrolling && usableLength > 0.0f) {
+	    scrollOffset = std::fmod (static_cast<float> (g_Time), 10000.0f) * usableLength;
+	}
 
-    for (uint32_t s = 0; s < totalSubSegments; s++) {
+	for (uint32_t s = first; s < last; s++) {
 	const glm::vec3& posStart = splinePositions[s];
 	const glm::vec3& posEnd = splinePositions[s + 1];
 	float sizeStart = splineSizes[s];
@@ -2184,17 +2252,17 @@ void CParticle::renderRope () {
 	const glm::vec4& colorStart = splineColors[s];
 	const glm::vec4& colorEnd = splineColors[s + 1];
 
-	// Neighboring points for shader tangent computation (CP0/CP1)
-	const glm::vec3& posPrev = (s > 0) ? splinePositions[s - 1] : posStart;
-	const glm::vec3& posAfter = (s + 2 < totalPoints) ? splinePositions[s + 2] : posEnd;
+	// Neighboring points for shader tangent computation (CP0/CP1), clamped to this polyline
+	const glm::vec3& posPrev = (s > first) ? splinePositions[s - 1] : posStart;
+	const glm::vec3& posAfter = (s + 2 <= last) ? splinePositions[s + 2] : posEnd;
 
-	// Compute trailPosition for UV mapping
+	// Compute trailPosition for UV mapping (relative to this polyline)
 	float trailPosition;
 	if (useSmoothing && totalArcLength > 0.0f) {
 	    // Arc-length parameterization: map cumulative distance to sub-segment space
-	    trailPosition = cumulativeArcLength[s] / totalArcLength * static_cast<float> (totalSubSegments);
+	    trailPosition = cumulativeArcLength[s - first] / totalArcLength * static_cast<float> (subSegments);
 	} else {
-	    trailPosition = static_cast<float> (s);
+	    trailPosition = static_cast<float> (s - first);
 	}
 	trailPosition += scrollOffset;
 
@@ -2258,6 +2326,7 @@ void CParticle::renderRope () {
 	m_indices[indexOffset++] = baseVertex + 2;
 	m_indices[indexOffset++] = baseVertex + 3;
 	m_indices[indexOffset++] = baseVertex + 0;
+	}
     }
 
     m_activeIndexCount = static_cast<GLsizei> (indexOffset);

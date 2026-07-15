@@ -1,6 +1,7 @@
 #include "ScriptEngine.h"
 #include "WallpaperEngine/Logging/Log.h"
 
+#include <regex>
 #include <sstream>
 
 using namespace WallpaperEngine::Scripting;
@@ -279,8 +280,48 @@ DynamicValueUniquePtr ScriptEngine::evaluate (
 	    << "    return builder;\n"
 	    << "  }\n";
 
+    // Provide the minimal Wallpaper Engine scripting runtime the property scripts expect. These
+    // backgrounds `import 'WEMath'` and use Vec2/Vec3/Vec4 plus an `engine` object; none of that
+    // exists in a bare QuickJS context, so without it every script throws ("Vec3 is not defined")
+    // and script-driven values (clearcolor, layer visibility, ...) silently fall back to their
+    // static defaults.
+    wrapper << R"JS(
+  function Vec2(x, y) { this.x = +x || 0; this.y = +y || 0; }
+  Vec2.prototype.add = function(o){ return new Vec2(this.x+o.x, this.y+o.y); };
+  Vec2.prototype.subtract = function(o){ return new Vec2(this.x-o.x, this.y-o.y); };
+  Vec2.prototype.multiply = function(o){ return (typeof o === 'number') ? new Vec2(this.x*o, this.y*o) : new Vec2(this.x*o.x, this.y*o.y); };
+  Vec2.prototype.scale = function(s){ return new Vec2(this.x*s, this.y*s); };
+  function Vec3(x, y, z) { this.x = +x || 0; this.y = +y || 0; this.z = +z || 0; }
+  Vec3.prototype.add = function(o){ return new Vec3(this.x+o.x, this.y+o.y, this.z+o.z); };
+  Vec3.prototype.subtract = function(o){ return new Vec3(this.x-o.x, this.y-o.y, this.z-o.z); };
+  Vec3.prototype.multiply = function(o){ return (typeof o === 'number') ? new Vec3(this.x*o, this.y*o, this.z*o) : new Vec3(this.x*o.x, this.y*o.y, this.z*o.z); };
+  Vec3.prototype.scale = function(s){ return new Vec3(this.x*s, this.y*s, this.z*s); };
+  function Vec4(x, y, z, w) { this.x = +x || 0; this.y = +y || 0; this.z = +z || 0; this.w = +w || 0; }
+  Vec4.prototype.add = function(o){ return new Vec4(this.x+o.x, this.y+o.y, this.z+o.z, this.w+o.w); };
+  Vec4.prototype.subtract = function(o){ return new Vec4(this.x-o.x, this.y-o.y, this.z-o.z, this.w-o.w); };
+  Vec4.prototype.multiply = function(o){ return (typeof o === 'number') ? new Vec4(this.x*o, this.y*o, this.z*o, this.w*o) : new Vec4(this.x*o.x, this.y*o.y, this.z*o.z, this.w*o.w); };
+  Vec4.prototype.scale = function(s){ return new Vec4(this.x*s, this.y*s, this.z*s, this.w*s); };
+  var WEMath = {
+    mix: function(a, b, t){ return (typeof a === 'number') ? (a + (b - a) * t) : a.add(b.subtract(a).scale(t)); },
+    clamp: function(v, lo, hi){ return Math.min(hi, Math.max(lo, v)); },
+    saturate: function(v){ return Math.min(1, Math.max(0, v)); }
+  };
+  var engine = {
+    frametime: 0.0166667,
+    setTimeout: function(){ return 0; },
+    clearTimeout: function(){},
+    registerAudioBuffers: function(){},
+    canvasSize: new Vec2(1920, 1080)
+  };
+)JS";
+
     // Strip 'use strict'; and export keywords, embed the script body
     std::string body = scriptSource;
+
+    // Remove ES module import statements (e.g. `import * as WEMath from 'WEMath';`). The imported
+    // modules are provided as globals above, and a bare (non-module) eval cannot parse `import`,
+    // which otherwise fails with "SyntaxError: Unexpected token '*'".
+    body = std::regex_replace (body, std::regex (R"(import\s+[^;]*;)"), "");
 
     // Remove 'use strict'; declarations
     size_t pos;
@@ -296,8 +337,12 @@ DynamicValueUniquePtr ScriptEngine::evaluate (
 	body.erase (pos, 7);
     }
 
+    // Only invoke update() when the script actually exports one. Many scripts only define event
+    // callbacks (mediaThumbnailChanged, init, ...); calling a missing update() would otherwise throw
+    // "update is not defined" and discard the property's current value.
     wrapper << body << "\n"
-	    << "  return update(globalThis.__currentValue);\n"
+	    << "  if (typeof update === 'function') { return update(globalThis.__currentValue); }\n"
+	    << "  return globalThis.__currentValue;\n"
 	    << "})();\n";
 
     std::string evalScript = wrapper.str ();

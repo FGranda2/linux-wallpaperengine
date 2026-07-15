@@ -306,17 +306,62 @@ void ShaderUnit::preprocessIncludes () {
 }
 
 void ShaderUnit::preprocessRequires () {
+    static const std::string directive = "#require";
     size_t start = 0, end = 0;
-    // comment out requires
-    while ((start = this->m_preprocessed.find ("#require", end)) != std::string::npos) {
+    while ((start = this->m_preprocessed.find (directive, end)) != std::string::npos) {
 	// TODO: CHECK FOR ERRORS HERE
 	const size_t lineEnd = this->m_preprocessed.find_first_of ('\n', start);
-	sLog.out ("Shader has a require block ", this->m_preprocessed.substr (start, lineEnd - start));
-	// replace the first two letters with a comment so the filelength doesn't change
-	this->m_preprocessed = this->m_preprocessed.replace (start, 2, "//");
+	const size_t contentEnd = (lineEnd == std::string::npos) ? this->m_preprocessed.length () : lineEnd;
+	const std::string line = this->m_preprocessed.substr (start, contentEnd - start);
+	sLog.out ("Shader has a require block ", line);
 
-	// go to the end of the line
-	end = lineEnd;
+	// extract the required module name (everything after "#require", trimmed)
+	std::string module = line.substr (directive.length ());
+	const size_t first = module.find_first_not_of (" \t\r");
+	const size_t last = module.find_last_not_of (" \t\r");
+	module = (first == std::string::npos) ? std::string () : module.substr (first, last - first + 1);
+
+	std::string replacement;
+	if (module == "LightingV1") {
+	    // Full scene lighting is not supported yet, so #require LightingV1 cannot inject the real
+	    // light-accumulation routine. Materials still enable the LIGHTING combo (which calls
+	    // PerformLighting_V1), so without a definition the shader fails to compile and the
+	    // object is dropped entirely (e.g. a missing sky/background layer). Inject an approximate
+	    // implementation instead: each scene light (position/radius in g_LightApproxPositionN,
+	    // peak-normalised colour*intensity/exponent in g_LightApproxColorN, uploaded by CPass —
+	    // see WallpaperParser::computeApproxLights) contributes colour attenuated by
+	    // (1 - distance/radius)^exponent, giving a per-pixel colour cast (e.g. a pink corner
+	    // fading into a blue sky). Scenes without lights return plain albedo, keeping unlit
+	    // wallpapers untouched. Shadows, normals and specular are ignored.
+	    // Kept on a single line so original line numbers are preserved for shader diagnostics.
+	    replacement =
+		"uniform float g_LightApproxCount; "
+		"uniform vec4 g_LightApproxPosition0; uniform vec4 g_LightApproxColor0; "
+		"uniform vec4 g_LightApproxPosition1; uniform vec4 g_LightApproxColor1; "
+		"uniform vec4 g_LightApproxPosition2; uniform vec4 g_LightApproxColor2; "
+		"uniform vec4 g_LightApproxPosition3; uniform vec4 g_LightApproxColor3; "
+		"vec3 ApproxLightContribution(vec4 lightPos, vec4 lightColor, vec3 worldPos) { "
+		"float atten = clamp(1.0 - distance(lightPos.xyz, worldPos) / max(lightPos.w, 1.0), 0.0, 1.0); "
+		// pow(0, 0) is undefined in GLSL (NaN on some drivers) and unused slots are all-zero,
+		// so keep the exponent strictly positive
+		"return lightColor.rgb * pow(atten, max(lightColor.w, 0.0001)); } "
+		"vec3 PerformLighting_V1(vec3 worldPos, vec3 albedo, vec3 normal, vec3 viewDir, "
+		"vec3 specularTint, vec3 f0, float roughness, float metallic) { "
+		"if (g_LightApproxCount < 0.5) return albedo; "
+		"vec3 light = ApproxLightContribution(g_LightApproxPosition0, g_LightApproxColor0, worldPos) "
+		"+ ApproxLightContribution(g_LightApproxPosition1, g_LightApproxColor1, worldPos) "
+		"+ ApproxLightContribution(g_LightApproxPosition2, g_LightApproxColor2, worldPos) "
+		"+ ApproxLightContribution(g_LightApproxPosition3, g_LightApproxColor3, worldPos); "
+		"return albedo * light; }";
+	} else {
+	    // unknown require, comment it out so it doesn't break compilation (preserving length)
+	    replacement = "//" + line.substr (2);
+	}
+
+	this->m_preprocessed.replace (start, contentEnd - start, replacement);
+
+	// continue searching after the text we just inserted
+	end = start + replacement.length ();
     }
 }
 

@@ -647,6 +647,14 @@ void CPass::setupUniforms () {
     // lighting variables
     this->addUniform ("g_LightAmbientColor", sceneData.colors.ambient);
     this->addUniform ("g_LightSkylightColor", sceneData.colors.skylight);
+    // approximate per-pixel lighting consumed by the injected PerformLighting_V1
+    // (see ShaderUnit::preprocessRequires); unused slots stay zero and contribute nothing
+    this->addUniform ("g_LightApproxCount", static_cast<float> (sceneData.approxLights.count));
+    for (size_t i = 0; i < SceneData::MaxApproxLights; i++) {
+	const auto& light = sceneData.approxLights.slots[i];
+	this->addUniform ("g_LightApproxPosition" + std::to_string (i), light.position);
+	this->addUniform ("g_LightApproxColor" + std::to_string (i), light.color);
+    }
     // register variables like brightness and alpha with some default value
     this->addUniform ("g_Brightness", renderable.getBrightness ());
     this->addUniform ("g_UserAlpha", renderable.getUserAlpha ());

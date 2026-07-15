@@ -89,6 +89,15 @@ public:
     void setTextureUVsStrategy (TextureUVsScaling strategy);
 
     /**
+     * Sets the presentation zoom (scene general.zoom). Values above 1 sample a central 1/zoom
+     * window of the wallpaper texture, keeping a hidden margin at the edges so camera parallax
+     * can displace layers without exposing their borders. Values below 1 are clamped to 1.
+     *
+     * @param zoom
+     */
+    void setZoom (float zoom);
+
+    /**
      * @return The width of viewport
      */
     [[nodiscard]] int getViewportWidth () const;
@@ -131,6 +140,9 @@ private:
 
     // Are Vs coordinates fliped
     bool m_vflip = false;
+
+    // Presentation zoom factor; UVs sample the central 1/zoom window (see setZoom)
+    float m_zoom = 1.0f;
 
     // Texture scaling mode
     TextureUVsScaling m_textureUVsMode = TextureUVsScaling::DefaultUVs;
