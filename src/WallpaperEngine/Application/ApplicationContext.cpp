@@ -393,6 +393,17 @@ void ApplicationContext::loadSettingsFromArgv () {
 		this->settings.render.window.clamp = flags;
 	    }
 	});
+    // Accepted and ignored, for front-ends that pass a Wayland layer; the Noctalia
+    // W Engine plugin emits --layer <name>. Layer selection is not implemented: the
+    // layer surface is always created on ZWLR_LAYER_SHELL_V1_LAYER_BACKGROUND (see
+    // WaylandOutputViewport.cpp). This must stay declared even though it does
+    // nothing, because parse_known_args silently ignores undeclared options and
+    // would then take the value as the positional background id. Any value is
+    // accepted on purpose, so a front-end can never fail on this flag.
+    backgroundGroup.add_argument ("--layer")
+	.help ("Ignored, accepted for compatibility: the background layer is always used")
+	.action ([] (const std::string&) -> void { })
+	.append ();
 
     auto& performanceGroup = program.add_group ("Performance options");
 
