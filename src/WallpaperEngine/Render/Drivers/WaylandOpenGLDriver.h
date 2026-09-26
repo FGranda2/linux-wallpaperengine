@@ -46,6 +46,10 @@ public:
 	EGLConfig config = nullptr;
 	EGLContext context = nullptr;
 	PFNEGLCREATEPLATFORMWINDOWSURFACEEXTPROC eglCreatePlatformWindowSurfaceEXT = nullptr;
+	/** Native fence entry points (EGL_ANDROID_native_fence_sync); all null when unsupported or disabled */
+	PFNEGLCREATESYNCKHRPROC eglCreateSyncKHR = nullptr;
+	PFNEGLDESTROYSYNCKHRPROC eglDestroySyncKHR = nullptr;
+	PFNEGLDUPNATIVEFENCEFDANDROIDPROC eglDupNativeFenceFDANDROID = nullptr;
     };
 
     struct WaylandContext {
@@ -73,6 +77,16 @@ public:
     void dispatchEventQueue () override;
     [[nodiscard]] void* getProcAddress (const char* name) const override;
 
+    /**
+     * Sleeps until the GPU has finished every command issued so far on the current context.
+     *
+     * Some drivers (e.g. NVIDIA) busy-wait inside eglSwapBuffers for the frame to finish rendering, burning a
+     * CPU core for the whole GPU frame time. Waiting on a native fence fd with poll() first lets the thread
+     * sleep instead, so the following swap returns almost immediately. Does nothing when native fences are
+     * unsupported; on the first failure it logs and permanently falls back to the driver's own wait.
+     */
+    void waitForRenderCompletion ();
+
     void onLayerClose (Output::WaylandOutputViewport*);
     Output::WaylandOutputViewport* surfaceToViewport (const wl_surface*) const;
 
@@ -96,6 +110,8 @@ private:
     void initWaylandRegistry ();
     void setupOutputLayerSurfaces ();
     void initEGL ();
+    /** Loads the native fence entry points used by waitForRenderCompletion, if the display supports them */
+    void initNativeFenceSync (const std::string& displayExtensions);
     void initGLEW ();
     void finishEGL () const;
 

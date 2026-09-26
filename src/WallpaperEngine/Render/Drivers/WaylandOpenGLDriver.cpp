@@ -17,6 +17,8 @@ extern "C" {
 #undef static
 
 #include <algorithm>
+#include <cerrno>
+#include <poll.h>
 #include <string.h>
 #include <unistd.h>
 
@@ -182,6 +184,8 @@ void WaylandOpenGLDriver::initEGL () {
 	sLog.exception ("EGL_KHR_create_context not supported!");
     }
 
+    this->initNativeFenceSync (CLIENTEXTENSIONSPOSTINIT);
+
     EGLint matchedConfigs = 0;
     const EGLint CONFIG_ATTRIBUTES[] = {
 	EGL_SURFACE_TYPE,    EGL_WINDOW_BIT, EGL_RED_SIZE, 1, EGL_GREEN_SIZE, 1, EGL_BLUE_SIZE, 1, EGL_SAMPLES, 4,
@@ -220,6 +224,80 @@ void WaylandOpenGLDriver::initEGL () {
 	this->finishEGL ();
 	sLog.error ("eglCreateContext error " + std::to_string (eglGetError ()));
 	sLog.exception ("eglCreateContext failed!");
+    }
+}
+
+void WaylandOpenGLDriver::initNativeFenceSync (const std::string& displayExtensions) {
+    // eglCreateSyncKHR/eglDestroySyncKHR come from EGL_KHR_fence_sync, the fd export from the Android extension
+    if (displayExtensions.find ("EGL_KHR_fence_sync") == std::string::npos
+	|| displayExtensions.find ("EGL_ANDROID_native_fence_sync") == std::string::npos) {
+	sLog.out ("EGL native fence sync not supported, eglSwapBuffers will wait for rendering by itself");
+	return;
+    }
+
+    const auto createSync = reinterpret_cast<PFNEGLCREATESYNCKHRPROC> (eglGetProcAddress ("eglCreateSyncKHR"));
+    const auto destroySync = reinterpret_cast<PFNEGLDESTROYSYNCKHRPROC> (eglGetProcAddress ("eglDestroySyncKHR"));
+    const auto dupFenceFd = reinterpret_cast<PFNEGLDUPNATIVEFENCEFDANDROIDPROC> (
+	eglGetProcAddress ("eglDupNativeFenceFDANDROID")
+    );
+
+    if (createSync == nullptr || destroySync == nullptr || dupFenceFd == nullptr) {
+	sLog.error ("EGL advertises native fence sync but did not return its entry points, not using it");
+	return;
+    }
+
+    m_eglContext.eglCreateSyncKHR = createSync;
+    m_eglContext.eglDestroySyncKHR = destroySync;
+    m_eglContext.eglDupNativeFenceFDANDROID = dupFenceFd;
+    sLog.out ("Using EGL native fence sync to wait for rendering before presenting frames");
+}
+
+void WaylandOpenGLDriver::waitForRenderCompletion () {
+    // upper bound for a single wait; if the GPU takes longer, eglSwapBuffers still waits for it by itself
+    constexpr int FENCE_WAIT_TIMEOUT_MS = 1000;
+
+    if (m_eglContext.eglDupNativeFenceFDANDROID == nullptr) {
+	return;
+    }
+
+    const auto disable = [this] (const char* reason) {
+	sLog.error ("EGL native fence wait failed (", reason, ", EGL error ", eglGetError (), "), not using it anymore");
+	m_eglContext.eglCreateSyncKHR = nullptr;
+	m_eglContext.eglDestroySyncKHR = nullptr;
+	m_eglContext.eglDupNativeFenceFDANDROID = nullptr;
+    };
+
+    const EGLint attributes[] = { EGL_SYNC_NATIVE_FENCE_FD_ANDROID, EGL_NO_NATIVE_FENCE_FD_ANDROID, EGL_NONE };
+    EGLSyncKHR sync
+	= m_eglContext.eglCreateSyncKHR (m_eglContext.display, EGL_SYNC_NATIVE_FENCE_ANDROID, attributes);
+
+    if (sync == EGL_NO_SYNC_KHR) {
+	disable ("eglCreateSyncKHR");
+	return;
+    }
+
+    // the fence only gets an fd once it has been submitted to the GPU
+    glFlush ();
+    // the fd is an independent duplicate, so the sync object can be released right away
+    const int fd = m_eglContext.eglDupNativeFenceFDANDROID (m_eglContext.display, sync);
+    m_eglContext.eglDestroySyncKHR (m_eglContext.display, sync);
+
+    if (fd == EGL_NO_NATIVE_FENCE_FD_ANDROID) {
+	disable ("eglDupNativeFenceFDANDROID");
+	return;
+    }
+
+    pollfd fence { .fd = fd, .events = POLLIN, .revents = 0 };
+    int result;
+
+    do {
+	result = poll (&fence, 1, FENCE_WAIT_TIMEOUT_MS);
+    } while (result < 0 && errno == EINTR);
+
+    close (fd);
+
+    if (result < 0) {
+	disable ("poll");
     }
 }
 

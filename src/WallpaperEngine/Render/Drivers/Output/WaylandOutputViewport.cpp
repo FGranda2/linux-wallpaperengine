@@ -264,12 +264,14 @@ void WaylandOutputViewport::swapOutput () {
     this->callbackInitialized = true;
 
     this->makeCurrent ();
+    // sleep until the frame is rendered, otherwise the swap below may busy-wait for the GPU
+    m_driver->waitForRenderCompletion ();
     frameCallback = wl_surface_frame (surface);
     wl_callback_add_listener (frameCallback, &frameListener, this);
-    eglSwapBuffers (m_driver->getEGLContext ()->display, this->eglSurface);
+    // pending state: applied atomically with the new buffer by the commit eglSwapBuffers performs itself
+    // (together with the attach and full-buffer damage), so no extra commit is needed afterwards
     wl_surface_set_buffer_scale (surface, scale);
-    wl_surface_damage_buffer (surface, 0, 0, INT32_MAX, INT32_MAX);
-    wl_surface_commit (surface);
+    eglSwapBuffers (m_driver->getEGLContext ()->display, this->eglSurface);
 }
 
 void WaylandOutputViewport::pauseTick () {

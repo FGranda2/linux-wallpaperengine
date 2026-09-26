@@ -79,6 +79,14 @@ SDLAudioDriver::SDLAudioDriver (
 ) : AudioDriver (applicationContext, detector, recorder), m_audioSpec () {
     this->m_streamListMutex = SDL_CreateMutex ();
 
+    // with audio disabled (--silent) nothing can be played (CSound only creates streams when audio is enabled),
+    // so don't open a playback device: its callback thread would otherwise keep waking up just to mix silence,
+    // even while every output is paused
+    if (!applicationContext.settings.audio.enabled) {
+	sLog.out ("Audio disabled, not opening an audio output device");
+	return;
+    }
+
     if (SDL_InitSubSystem (SDL_INIT_AUDIO) < 0) {
 	sLog.error ("Cannot initialize SDL audio system, SDL_GetError: ", SDL_GetError ());
 	sLog.error ("Continuing without audio support");
