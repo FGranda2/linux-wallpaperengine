@@ -19,6 +19,7 @@
 #include "WallpaperEngine/WebBrowser/WebBrowserContext.h"
 
 #include "WallpaperEngine/Data/Model/Types.h"
+#include "WallpaperEngine/Media/MediaSource.h"
 
 #include <set>
 
@@ -36,15 +37,15 @@ public:
     /**
      * Prepares the application for rendering.
      */
-    void setup();
+    void setup ();
     /**
      * Renders a frame of the application.
      */
-    void render();
+    void render ();
     /**
      * Cleans up all the resources used by the application.
      */
-    static void cleanup();
+    static void cleanup ();
     /**
      * Shows the application until it's closed
      */
@@ -88,6 +89,11 @@ private:
      * @param bg
      */
     AssetLocatorUniquePtr setupAssetLocator (const std::string& bg) const;
+    /**
+     * Initializes subsystems required for application operation
+     */
+    void initializeSubsystems ();
+
     /**
      * Loads projects based off the settings
      */
@@ -152,6 +158,8 @@ private:
      * and drives wallpaper->setPause()/playlist-timer compensation accordingly.
      * For detectors that don't expose per-output state (X11/Wayland), the global
      * anythingFullscreen() value is applied uniformly to every known output.
+     * A wallpaper shared by several outputs (span groups) is only paused once every
+     * output showing it is paused, so a covered monitor never freezes a visible one.
      */
     void applyPerOutputPause ();
     void advancePlaylist (
@@ -177,6 +185,7 @@ private:
     std::unique_ptr<WallpaperEngine::Render::Drivers::VideoDriver> m_videoDriver = nullptr;
     std::unique_ptr<WallpaperEngine::Render::Drivers::Detectors::FullScreenDetector> m_fullScreenDetector = nullptr;
     std::unique_ptr<WallpaperEngine::WebBrowser::WebBrowserContext> m_browserContext = nullptr;
+    std::unique_ptr<WallpaperEngine::Media::MediaSource> m_mediaSource = nullptr;
     std::mt19937 m_playlistRng { std::random_device {}() };
     bool m_screenShotTaken = false;
     uint32_t m_nextFrameScreenshot = 0;

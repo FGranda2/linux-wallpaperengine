@@ -23,12 +23,12 @@ private:
     static ImageUniquePtr
     parseImage (const JSON& it, const Project& project, ObjectData base, const std::string& image);
     static ParticleUniquePtr parseParticle (const JSON& it, const Project& project, ObjectData base);
+    static TextUniquePtr parseText (const JSON& it, const Project& project, ObjectData base);
     static std::vector<ImageEffectUniquePtr> parseEffects (const JSON& it, const Project& project);
     static ImageEffectUniquePtr parseEffect (const JSON& it, const Project& project);
     static std::vector<ImageEffectPassOverrideUniquePtr>
     parseEffectPassOverrides (const JSON& it, const Project& project);
     static ImageEffectPassOverrideUniquePtr parseEffectPass (const JSON& it, const Project& project);
-    static TextureMap parseTextureMap (const JSON& it);
     static ComboMap parseComboMap (const JSON& it);
     static std::vector<ImageAnimationLayerUniquePtr> parseAnimationLayers (const JSON& it, const Project& project);
     static ImageAnimationLayerUniquePtr parseAnimationLayer (const JSON& it, const Project& project);

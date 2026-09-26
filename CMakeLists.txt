@@ -28,6 +28,7 @@ find_package(X11)
 find_package(OpenGL REQUIRED)
 find_package(GLEW REQUIRED)
 
+find_package(DBus REQUIRED)
 find_package(GLUT REQUIRED)
 find_package(ZLIB REQUIRED)
 find_package(SDL2 REQUIRED)
@@ -35,6 +36,7 @@ find_package(MPV REQUIRED)
 find_package(LZ4 REQUIRED)
 find_package(FFMPEG REQUIRED)
 find_package(PulseAudio REQUIRED)
+find_package(Freetype REQUIRED)
 
 set(ENABLE_OPT OFF)
 set(SPIRV_CROSS_FORCE_PIC ON)
@@ -131,6 +133,13 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/output)
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/lib)
 set(TARGET_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/output)
 
+# RPATH configuration: use build directories during development, but $ORIGIN after installation
+# NOTE: \$ORIGIN must be escaped because CMake treats $VAR as variable expansion.
+# IMPORTANT: This must be set BEFORE any add_executable()/add_library() calls in this directory.
+set(CMAKE_BUILD_WITH_INSTALL_RPATH FALSE)
+set(CMAKE_INSTALL_RPATH "\$ORIGIN;\$ORIGIN/lib;\$ORIGIN/lib64")
+set(CMAKE_INSTALL_RPATH_USE_LINK_PATH FALSE)
+
 add_subdirectory(${CEF_LIBCEF_DLL_WRAPPER_PATH} libcef_dll_wrapper)
 add_subdirectory(src/External/glslang-WallpaperEngine glslang)
 add_subdirectory(src/External/SPIRV-Cross-WallpaperEngine spirv-cross)
@@ -170,6 +179,10 @@ if(WAYLAND_SUPPORT_FOUND)
         COMMAND ${WaylandScanner} client-header ${WAYLAND_PROTOCOLS_DIR}/stable/xdg-shell/xdg-shell.xml ${WAYLAND_OUTPUT_DIR}/xdg-shell-protocol.h)
     add_custom_command(OUTPUT ${WAYLAND_OUTPUT_DIR}/xdg-shell-protocol.c
         COMMAND ${WaylandScanner} private-code ${WAYLAND_PROTOCOLS_DIR}/stable/xdg-shell/xdg-shell.xml ${WAYLAND_OUTPUT_DIR}/xdg-shell-protocol.c)
+    add_custom_command(OUTPUT ${WAYLAND_OUTPUT_DIR}/xdg-output-unstable-v1-protocol.h
+        COMMAND ${WaylandScanner} client-header ${WAYLAND_PROTOCOLS_DIR}/unstable/xdg-output/xdg-output-unstable-v1.xml ${WAYLAND_OUTPUT_DIR}/xdg-output-unstable-v1-protocol.h)
+    add_custom_command(OUTPUT ${WAYLAND_OUTPUT_DIR}/xdg-output-unstable-v1-protocol.c
+        COMMAND ${WaylandScanner} private-code ${WAYLAND_PROTOCOLS_DIR}/unstable/xdg-output/xdg-output-unstable-v1.xml ${WAYLAND_OUTPUT_DIR}/xdg-output-unstable-v1-protocol.c)
 
     include_directories(${WAYLAND_SUPPORT_INCLUDE_DIRS})
     include_directories(${WAYLAND_OUTPUT_DIR})
@@ -199,7 +212,9 @@ if(WAYLAND_SUPPORT_FOUND)
         ${WAYLAND_OUTPUT_DIR}/wlr-foreign-toplevel-management-unstable-v1-protocol.c
         ${WAYLAND_OUTPUT_DIR}/wlr-foreign-toplevel-management-unstable-v1-protocol.h
         ${WAYLAND_OUTPUT_DIR}/wlr-layer-shell-unstable-v1-protocol.c
-        ${WAYLAND_OUTPUT_DIR}/wlr-layer-shell-unstable-v1-protocol.h)
+        ${WAYLAND_OUTPUT_DIR}/wlr-layer-shell-unstable-v1-protocol.h
+        ${WAYLAND_OUTPUT_DIR}/xdg-output-unstable-v1-protocol.c
+        ${WAYLAND_OUTPUT_DIR}/xdg-output-unstable-v1-protocol.h)
 endif()
 
 if(X11_FOUND)
@@ -249,7 +264,22 @@ set_target_properties(ceflib
 ADD_LOGICAL_TARGET(libcef_lib "${CEF_LIB_DEBUG}" "${CEF_LIB_RELEASE}")
 PRINT_CEF_CONFIG()
 
+# Embed scene-script builtins (builtins.js) into a generated header, so the JS can
+# live in its own file (lint/syntax-highlight friendly) instead of an inline literal.
+# Added to the global include_directories so both the library and the tests target
+# (which recompiles the common sources) can find the generated header.
+set(WPENGINE_GENERATED_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
+set(WPENGINE_BUILTINS_JS "${CMAKE_CURRENT_SOURCE_DIR}/src/WallpaperEngine/Scripting/resources/builtins.js")
+file(READ "${WPENGINE_BUILTINS_JS}" WPENGINE_SCRIPT_BUILTINS)
+configure_file(
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/WallpaperEngine/Scripting/resources/Builtins.generated.h.in"
+    "${WPENGINE_GENERATED_DIR}/WallpaperEngine/Scripting/Builtins.generated.h"
+    @ONLY)
+# re-run configuration (regenerating the header) whenever the .js changes
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${WPENGINE_BUILTINS_JS}")
+
 include_directories(
+    ${WPENGINE_GENERATED_DIR}
     src
     src/External/glslang-WallpaperEngine
     src/External/SPIRV-Cross-WallpaperEngine
@@ -265,7 +295,8 @@ include_directories(
     ${PULSEAUDIO_INCLUDE_DIR}
     ${CEF_INCLUDE_PATH}
     ${CMAKE_SOURCE_DIR}
-    ${X11_INCLUDES})
+    ${X11_INCLUDES}
+    ${DBUS_INCLUDE_DIRS})
 
 set(COMMON_SOURCES
     src/External/MimeTypes/MimeTypes.cpp
@@ -299,6 +330,8 @@ set(COMMON_SOURCES
     src/WallpaperEngine/FileSystem/Adapters/Package.h
     src/WallpaperEngine/FileSystem/Adapters/Virtual.cpp
     src/WallpaperEngine/FileSystem/Adapters/Virtual.h
+    src/WallpaperEngine/FileSystem/Adapters/MediaCover.h
+    src/WallpaperEngine/FileSystem/Adapters/MediaCover.cpp
 
     src/WallpaperEngine/Audio/Drivers/Recorders/PulseAudioPlaybackRecorder.cpp
     src/WallpaperEngine/Audio/Drivers/Recorders/PulseAudioPlaybackRecorder.h
@@ -324,6 +357,11 @@ set(COMMON_SOURCES
     src/WallpaperEngine/Input/MouseInput.h
     src/WallpaperEngine/Input/Drivers/GLFWMouseInput.cpp
     src/WallpaperEngine/Input/Drivers/GLFWMouseInput.h
+
+    src/WallpaperEngine/Media/MediaSource.h
+    src/WallpaperEngine/Media/MediaSource.cpp
+    src/WallpaperEngine/Media/DBusMediaSource.h
+    src/WallpaperEngine/Media/DBusMediaSource.cpp
 
     src/WallpaperEngine/Render/Shaders/Variables/ShaderVariable.h
     src/WallpaperEngine/Render/Shaders/Variables/ShaderVariable.cpp
@@ -392,6 +430,8 @@ set(COMMON_SOURCES
     src/WallpaperEngine/Render/CObject.cpp
     src/WallpaperEngine/Render/CTexture.cpp
     src/WallpaperEngine/Render/CTexture.h
+    src/WallpaperEngine/Render/AlbumTexture.h
+    src/WallpaperEngine/Render/AlbumTexture.cpp
     src/WallpaperEngine/Render/TextureProvider.h
 
     src/WallpaperEngine/Render/Objects/CRenderable.cpp
@@ -402,6 +442,8 @@ set(COMMON_SOURCES
     src/WallpaperEngine/Render/Objects/CSound.cpp
     src/WallpaperEngine/Render/Objects/CParticle.h
     src/WallpaperEngine/Render/Objects/CParticle.cpp
+    src/WallpaperEngine/Render/Objects/CText.h
+    src/WallpaperEngine/Render/Objects/CText.cpp
 
     src/WallpaperEngine/Render/CFBO.h
     src/WallpaperEngine/Render/CFBO.cpp
@@ -442,6 +484,8 @@ set(COMMON_SOURCES
     src/WallpaperEngine/Data/Utils/BinaryReader.h
     src/WallpaperEngine/Data/Utils/MemoryStream.h
     src/WallpaperEngine/Data/Utils/SFINAE.h
+    src/WallpaperEngine/Data/Parsers/DynamicValueParser.h
+    src/WallpaperEngine/Data/Parsers/DynamicValueParser.cpp
     src/WallpaperEngine/Data/Parsers/EffectParser.cpp
     src/WallpaperEngine/Data/Parsers/EffectParser.h
     src/WallpaperEngine/Data/Parsers/ProjectParser.cpp
@@ -464,6 +508,8 @@ set(COMMON_SOURCES
     src/WallpaperEngine/Data/Parsers/PropertyParser.h
     src/WallpaperEngine/Data/Parsers/TextureParser.cpp
     src/WallpaperEngine/Data/Parsers/TextureParser.h
+    src/WallpaperEngine/Data/Builders/ColorBuilder.h
+    src/WallpaperEngine/Data/Builders/ColorBuilder.cpp
     src/WallpaperEngine/Data/Builders/UserSettingBuilder.h
     src/WallpaperEngine/Data/Builders/VectorBuilder.cpp
     src/WallpaperEngine/Data/Builders/VectorBuilder.h
@@ -475,10 +521,38 @@ set(COMMON_SOURCES
     src/WallpaperEngine/VideoPlayback/MPV/GLPlayer.h
     src/WallpaperEngine/VideoPlayback/MPV/MemoryStreamProtocol.cpp
     src/WallpaperEngine/VideoPlayback/MPV/MemoryStreamProtocol.h
+
+    src/WallpaperEngine/Scripting/Adapters/ObjectAdapter.h
+    src/WallpaperEngine/Scripting/Adapters/ObjectAdapter.cpp
+    src/WallpaperEngine/Scripting/Adapters/VectorAdapter.h
+    src/WallpaperEngine/Scripting/Adapters/VectorAdapter.cpp
+    src/WallpaperEngine/Scripting/Adapters/ScriptableObjectAdapter.h
+    src/WallpaperEngine/Scripting/Adapters/ScriptableObjectAdapter.cpp
+
+    src/WallpaperEngine/Scripting/Modules/ColorModule.h
+    src/WallpaperEngine/Scripting/Modules/ColorModule.cpp
+    src/WallpaperEngine/Scripting/Modules/MathModule.h
+    src/WallpaperEngine/Scripting/Modules/MathModule.cpp
+    src/WallpaperEngine/Scripting/Modules/ScriptModule.h
+    src/WallpaperEngine/Scripting/Modules/ScriptModule.cpp
+
+    src/WallpaperEngine/Scripting/ConsoleObject.h
+    src/WallpaperEngine/Scripting/ConsoleObject.cpp
+    src/WallpaperEngine/Scripting/EngineObject.h
+    src/WallpaperEngine/Scripting/EngineObject.cpp
+    src/WallpaperEngine/Scripting/InputObject.h
+    src/WallpaperEngine/Scripting/InputObject.cpp
+    src/WallpaperEngine/Scripting/SceneObject.h
+    src/WallpaperEngine/Scripting/SceneObject.cpp
     src/WallpaperEngine/Scripting/ScriptEngine.h
+    src/WallpaperEngine/Scripting/ScriptPropertiesObject.h
+    src/WallpaperEngine/Scripting/ScriptPropertiesObject.cpp
     src/WallpaperEngine/Scripting/ScriptEngine.cpp
-    src/WallpaperEngine/Data/Model/ScriptedDynamicValue.h
-    src/WallpaperEngine/Data/Model/ScriptedDynamicValue.cpp)
+    src/WallpaperEngine/Scripting/ScriptableObject.h
+    src/WallpaperEngine/Scripting/ScriptableObject.cpp
+
+    src/WallpaperEngine/Maths.h
+    src/WallpaperEngine/Maths.cpp)
 
 if(BUILD_TESTING)
     add_executable(
@@ -493,7 +567,8 @@ if(BUILD_TESTING)
         src/WallpaperEngine/Testing/Input/TestingMouseInput.h
         src/WallpaperEngine/Testing/Harnesses/RenderHarness.cpp
         src/WallpaperEngine/Testing/Harnesses/RenderHarness.h
-        src/WallpaperEngine/Testing/Cases/MouseCoordinates.cpp)
+        src/WallpaperEngine/Testing/Cases/MouseCoordinates.cpp
+        src/WallpaperEngine/Testing/Cases/PropertyParser.cpp)
 endif()
 
 add_library(
@@ -514,8 +589,10 @@ target_link_libraries (linux-wallpaperengine-lib PUBLIC
     ${FFMPEG_LIBRARIES}
     ${MPV_LIBRARY}
     ${PULSEAUDIO_LIBRARY}
+    Freetype::Freetype
     ${WAYLAND_LIBRARIES}
     ${X11_LIBRARIES}
+    ${DBUS_LIBRARIES}
     kissfft
     glslang
     spirv-cross-core
@@ -538,8 +615,10 @@ if (BUILD_TESTING)
         ${FFMPEG_LIBRARIES}
         ${MPV_LIBRARY}
         ${PULSEAUDIO_LIBRARY}
+        Freetype::Freetype
         ${WAYLAND_LIBRARIES}
         ${X11_LIBRARIES}
+        ${DBUS_LIBRARIES}
         kissfft
         glslang
         spirv-cross-core
@@ -614,6 +693,18 @@ add_executable(linux-wallpaperengine
 
 target_link_libraries (linux-wallpaperengine PUBLIC linux-wallpaperengine-lib)
 
-# set some install parameters if not in debug mode
-install(DIRECTORY ${TARGET_OUTPUT_DIRECTORY}/ DESTINATION .)
-install(FILES ${TARGET_OUTPUT_DIRECTORY}/${PROJECT_NAME} PERMISSIONS OWNER_READ OWNER_WRITE WORLD_EXECUTE WORLD_READ GROUP_READ DESTINATION .)
+# Install the main executable and shared library via install(TARGETS)
+# so that CMake automatically strips/replaces the build-time RPATH.
+install(TARGETS linux-wallpaperengine
+    RUNTIME DESTINATION .
+)
+install(TARGETS linux-wallpaperengine-lib
+    LIBRARY DESTINATION .
+)
+
+# Install everything else from the output directory (CEF resources, helper binaries, etc.)
+# but exclude the files already handled by install(TARGETS) above.
+install(DIRECTORY ${TARGET_OUTPUT_DIRECTORY}/ DESTINATION .
+    PATTERN "linux-wallpaperengine" EXCLUDE
+    PATTERN "liblinux-wallpaperengine-lib.so" EXCLUDE
+)

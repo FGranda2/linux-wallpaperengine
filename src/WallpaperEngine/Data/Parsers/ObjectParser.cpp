@@ -4,6 +4,9 @@
 #include "ModelParser.h"
 
 #include "ShaderConstantParser.h"
+#include "TextureParser.h"
+#include "UserSettingParser.h"
+#include "WallpaperEngine/Data/Builders/ColorBuilder.h"
 #include "WallpaperEngine/Data/Model/Object.h"
 #include "WallpaperEngine/Data/Model/Project.h"
 #include "WallpaperEngine/Logging/Log.h"
@@ -20,6 +23,8 @@ ObjectUniquePtr ObjectParser::parse (const JSON& it, const Project& project) {
     const auto particleIt = it.find ("particle");
     const auto textIt = it.find ("text");
     const auto lightIt = it.find ("light");
+    // use shape to refer to VolumeLight
+    const auto shapeIt = it.find ("shape");
 
     // Parse base object data
     // Some particle objects have numeric 'name' fields, so handle type mismatches gracefully
@@ -31,6 +36,9 @@ ObjectUniquePtr ObjectParser::parse (const JSON& it, const Project& project) {
 	    .dependencies = parseDependencies (it),
 	    .parent = it.optional<int> ("parent"),
 	    .origin = it.user ("origin", project.properties, glm::vec3 (0.0f)),
+	    .groupScale = it.user ("scale", project.properties, glm::vec3 (1.0f)),
+	    .groupAngles = it.user ("angles", project.properties, glm::vec3 (0.0f)),
+	    .groupVisible = it.user ("visible", project.properties, true),
 	};
     } catch (const std::exception& e) {
 	sLog.error ("Error parsing object base data: ", e.what ());
@@ -45,7 +53,16 @@ ObjectUniquePtr ObjectParser::parse (const JSON& it, const Project& project) {
 		name = std::to_string (nameIt->get<int> ());
 	    }
 	}
-	basedata = ObjectData { .id = id, .name = name, .dependencies = {} };
+	basedata = ObjectData {
+	    .id = id,
+	    .name = name,
+	    .dependencies = parseDependencies (it),
+	    .parent = it.optional<int> ("parent"),
+	    .origin = it.user ("origin", project.properties, glm::vec3 (0.0f)),
+	    .groupScale = it.user ("scale", project.properties, glm::vec3 (1.0f)),
+	    .groupAngles = it.user ("angles", project.properties, glm::vec3 (0.0f)),
+	    .groupVisible = it.user ("visible", project.properties, true),
+	};
     }
 
     if (imageIt != it.end () && imageIt->is_string ()) {
@@ -55,14 +72,18 @@ ObjectUniquePtr ObjectParser::parse (const JSON& it, const Project& project) {
     } else if (particleIt != it.end ()) {
 	return parseParticle (it, project, std::move (basedata));
     } else if (textIt != it.end ()) {
-	sLog.error ("Text objects are not supported yet");
+	return parseText (it, project, std::move (basedata));
     } else if (lightIt != it.end ()) {
 	sLog.error ("Light objects are not supported yet");
+    } else if (shapeIt != it.end ()) {
+	sLog.error ("VolumeLight objects are not supported yet");
     } else {
-	// dump the object for now, might want to change later
-	// TODO: RE-EVALUATE IF THIS MAKES SENSE, THERE'S OBJECTS THAT CONTAIN OTHER OBJECTS AND THUS AREN'T REALLY
-	// ANYTHING SPECIAL
-	sLog.error ("Unknown object type found: ", it.dump ());
+	if (!it.optional ("solid", false)) {
+	    // dump the object for now, might want to change later
+	    // TODO: RE-EVALUATE IF THIS MAKES SENSE, THERE'S OBJECTS THAT CONTAIN OTHER OBJECTS AND THUS AREN'T REALLY
+	    // ANYTHING SPECIAL
+	    sLog.error ("Unknown object type found: ", it.dump ());
+	}
     }
 
     return std::make_unique<Object> (std::move (basedata));
@@ -101,6 +122,25 @@ SoundUniquePtr ObjectParser::parseSound (const JSON& it, ObjectData base) {
     );
 }
 
+TextUniquePtr ObjectParser::parseText (const JSON& it, const Project& project, ObjectData base) {
+    return std::make_unique<Text> (
+	std::move (base),
+	TextData {
+	    .text = it.user ("text", project.properties),
+	    .font = it.optional ("font", std::string ()),
+	    .pointSize = it.user ("pointsize", project.properties, 32.0f),
+	    .size = it.optional ("size", glm::vec2 (0.0f)),
+	    .scale = it.user ("scale", project.properties, glm::vec3 (1.0f)),
+	    .color = it.color ("color", project.properties, Builders::ColorBuilder::White),
+	    .alpha = it.user ("alpha", project.properties, 1.0f),
+	    .visible = it.user ("visible", project.properties, true),
+	    .alignment = it.optional ("horizontalalign", it.optional ("alignment", std::string ("center"))),
+	    .verticalalign = it.optional ("verticalalign", std::string ("center")),
+	    .padding = it.optional ("padding", 0),
+	}
+    );
+}
+
 ImageUniquePtr
 ObjectParser::parseImage (const JSON& it, const Project& project, ObjectData base, const std::string& image) {
     const auto& properties = project.properties;
@@ -111,15 +151,15 @@ ObjectParser::parseImage (const JSON& it, const Project& project, ObjectData bas
 	std::move (base),
 	ImageData {
 	    .scale = it.user ("scale", properties, glm::vec3 (1.0f)),
-	    .angles = it.user ("angles", properties, glm::vec3 (0.0)),
+	    .angles = it.user ("angles", properties, glm::vec3 (0.0f)),
 	    .visible = it.user ("visible", properties, true),
 	    .alpha = it.user ("alpha", properties, 1.0f),
-	    .color = it.user ("color", properties, glm::vec4 (1.0f)),
-	    .alignment = it.optional ("alignment", std::string ("center")),
-	    .size = it.optional ("size", glm::vec2 (0.0f)),
+	    .color = it.color ("color", properties, Builders::ColorBuilder::White),
+	    .alignment = it.optional ("horizontalalign", it.optional ("alignment", std::string ("center"))),
+	    .size = it.user ("size", properties, glm::vec2 (0.0f))->value->getVec2 (),
 	    .parallaxDepth = it.user ("parallaxDepth", properties, glm::vec2 (0.0f)),
-	    .colorBlendMode = it.optional ("colorBlendMode", 0),
-	    .brightness = it.optional ("brightness", 1.0f),
+	    .colorBlendMode = it.user ("colorBlendMode", properties, 0),
+	    .brightness = it.user ("brightness", properties, 1.0f),
 	    .model = ModelParser::load (project, image),
 	    .effects = effects.has_value () ? parseEffects (*effects, project) : std::vector<ImageEffectUniquePtr> {},
 	    .animationLayers = animationLayers.has_value () ? parseAnimationLayers (*animationLayers, project)
@@ -127,11 +167,23 @@ ObjectParser::parseImage (const JSON& it, const Project& project, ObjectData bas
 	}
     );
 
-    // color should be a vec4 for alpha, but it's read as vec3
-    if (result->color->value->getType () == DynamicValue::UnderlyingType::Vec3) {
-	result->color->value->update (glm::vec4 (result->color->value->getVec3 (), 1.0f));
-    } else if (result->color->value->getType () == DynamicValue::UnderlyingType::IVec3) {
-	result->color->value->update (glm::vec4 (result->color->value->getIVec3 (), 255));
+    const auto instance = it.optional ("instance");
+
+    if (instance.has_value () && instance->is_object () && !result->model->material->passes.empty ()) {
+	auto& firstPass = **result->model->material->passes.begin ();
+	const auto instanceTextures = instance->optional ("textures");
+
+	if (instanceTextures.has_value ()) {
+	    const auto parsed = TextureParser::parseTextureMap (*instanceTextures);
+	    firstPass.textures.insert (parsed.begin (), parsed.end ());
+	}
+
+	const auto instanceUserTextures = instance->optional ("usertextures");
+
+	if (instanceUserTextures.has_value ()) {
+	    const auto parsed = TextureParser::parseTextureMap (*instanceUserTextures);
+	    firstPass.usertextures.insert (parsed.begin (), parsed.end ());
+	}
     }
 
     return result;
@@ -181,6 +233,7 @@ ImageEffectPassOverrideUniquePtr ObjectParser::parseEffectPass (const JSON& it, 
     const auto& combos = it.optional ("combos");
     const auto& textures = it.optional ("textures");
     const auto& constants = it.optional ("constantshadervalues");
+    const auto& usertextures = it.optional ("usertextures");
 
     // TODO: PARSE CONSTANT SHADER VALUES AND FIND REFS?
     return std::make_unique<ImageEffectPassOverride> (ImageEffectPassOverride {
@@ -188,32 +241,10 @@ ImageEffectPassOverrideUniquePtr ObjectParser::parseEffectPass (const JSON& it, 
 	.combos = combos.has_value () ? parseComboMap (combos.value ()) : ComboMap {},
 	.constants
 	= constants.has_value () ? ShaderConstantParser::parse (constants.value (), project) : ShaderConstantMap {},
-	.textures = textures.has_value () ? parseTextureMap (textures.value ()) : TextureMap {},
+	.textures = textures.has_value () ? TextureParser::parseTextureMap (textures.value ()) : TextureMap {},
+	.usertextures
+	= usertextures.has_value () ? TextureParser::parseTextureMap (usertextures.value ()) : TextureMap {},
     });
-}
-
-TextureMap ObjectParser::parseTextureMap (const JSON& it) {
-    if (!it.is_array ()) {
-	return {};
-    }
-
-    TextureMap result = {};
-    int textureIndex = -1;
-
-    for (const auto& cur : it) {
-	textureIndex++;
-
-	if (cur.is_null ()) {
-	    continue;
-	} else {
-	    std::string texName = cur;
-	    if (!texName.empty ()) {
-		result.emplace (textureIndex, texName);
-	    }
-	}
-    }
-
-    return result;
 }
 
 ComboMap ObjectParser::parseComboMap (const JSON& it) {
@@ -245,12 +276,14 @@ std::vector<ImageAnimationLayerUniquePtr> ObjectParser::parseAnimationLayers (co
 }
 
 ImageAnimationLayerUniquePtr ObjectParser::parseAnimationLayer (const JSON& it, const Project& project) {
+    const auto& properties = project.properties;
+
     return std::make_unique<ImageAnimationLayer> (ImageAnimationLayer {
-	.id = it.require ("id", "Animation layer must have an id"),
-	.rate = it.require ("rate", "Animation layer must have a rate"),
-	.visible = it.user ("visible", project.properties, false),
-	.blend = it.require ("blend", "Animation layer must include blend"),
-	.animation = it.require ("animation", "Animation layer must include an animation"),
+	.id = it.require<int> ("id", "Animation layer must have an id"),
+	.rate = it.user ("rate", properties, 1.0f),
+	.visible = it.user ("visible", properties, false),
+	.blend = it.user ("blend", properties, 1.0f),
+	.animation = it.user ("animation", properties, 0),
     });
 }
 
@@ -281,43 +314,17 @@ ParticleUniquePtr ObjectParser::parseParticle (const JSON& it, const Project& pr
 		    .renderers = {},
 		    .controlPoints = {},
 		    .children = {},
-		    .instanceOverride
-		    = { .enabled
-			= std::make_unique<UserSetting> (UserSetting { .value = std::make_unique<DynamicValue> (false),
-								       .property = nullptr,
-								       .condition = std::nullopt }),
-			.alpha
-			= std::make_unique<UserSetting> (UserSetting { .value = std::make_unique<DynamicValue> (1.0f),
-								       .property = nullptr,
-								       .condition = std::nullopt }),
-			.size
-			= std::make_unique<UserSetting> (UserSetting { .value = std::make_unique<DynamicValue> (1.0f),
-								       .property = nullptr,
-								       .condition = std::nullopt }),
-			.lifetime
-			= std::make_unique<UserSetting> (UserSetting { .value = std::make_unique<DynamicValue> (1.0f),
-								       .property = nullptr,
-								       .condition = std::nullopt }),
-			.rate
-			= std::make_unique<UserSetting> (UserSetting { .value = std::make_unique<DynamicValue> (1.0f),
-								       .property = nullptr,
-								       .condition = std::nullopt }),
-			.speed
-			= std::make_unique<UserSetting> (UserSetting { .value = std::make_unique<DynamicValue> (1.0f),
-								       .property = nullptr,
-								       .condition = std::nullopt }),
-			.count
-			= std::make_unique<UserSetting> (UserSetting { .value = std::make_unique<DynamicValue> (1.0f),
-								       .property = nullptr,
-								       .condition = std::nullopt }),
-			.color = std::make_unique<UserSetting> (UserSetting {
-			    .value = std::make_unique<DynamicValue> (glm::vec3 (1.0f)),
-			    .property = nullptr,
-			    .condition = std::nullopt }),
-			.colorn = std::make_unique<UserSetting> (UserSetting {
-			    .value = std::make_unique<DynamicValue> (glm::vec3 (1.0f)),
-			    .property = nullptr,
-			    .condition = std::nullopt }) },
+		    .instanceOverride = {
+		        .enabled = Builders::UserSettingBuilder::fromValue(false),
+			.alpha = Builders::UserSettingBuilder::fromValue(1.0f),
+			.size = Builders::UserSettingBuilder::fromValue(1.0f),
+			.lifetime = Builders::UserSettingBuilder::fromValue(1.0f),
+			.rate = Builders::UserSettingBuilder::fromValue(1.0f),
+			.speed = Builders::UserSettingBuilder::fromValue(1.0f),
+			.count = Builders::UserSettingBuilder::fromValue(1.0f),
+			.color = Builders::UserSettingBuilder::fromValue(1.0f),
+			.colorn = Builders::UserSettingBuilder::fromValue(1.0f),
+		    },
 		}
 	    );
 	}
@@ -421,28 +428,15 @@ ParticleUniquePtr ObjectParser::parseParticle (const JSON& it, const Project& pr
 
 	// Parse instance override
 	ParticleInstanceOverride instanceOverride = {
-	    .enabled = std::make_unique<UserSetting> (UserSetting {
-		.value = std::make_unique<DynamicValue> (false), .property = nullptr, .condition = std::nullopt }),
-	    .alpha = std::make_unique<UserSetting> (UserSetting {
-		.value = std::make_unique<DynamicValue> (1.0f), .property = nullptr, .condition = std::nullopt }),
-	    .size = std::make_unique<UserSetting> (UserSetting {
-		.value = std::make_unique<DynamicValue> (1.0f), .property = nullptr, .condition = std::nullopt }),
-	    .lifetime = std::make_unique<UserSetting> (UserSetting {
-		.value = std::make_unique<DynamicValue> (1.0f), .property = nullptr, .condition = std::nullopt }),
-	    .rate = std::make_unique<UserSetting> (UserSetting {
-		.value = std::make_unique<DynamicValue> (1.0f), .property = nullptr, .condition = std::nullopt }),
-	    .speed = std::make_unique<UserSetting> (UserSetting {
-		.value = std::make_unique<DynamicValue> (1.0f), .property = nullptr, .condition = std::nullopt }),
-	    .count = std::make_unique<UserSetting> (UserSetting {
-		.value = std::make_unique<DynamicValue> (1.0f), .property = nullptr, .condition = std::nullopt }),
-	    .color
-	    = std::make_unique<UserSetting> (UserSetting { .value = std::make_unique<DynamicValue> (glm::vec3 (1.0f)),
-							   .property = nullptr,
-							   .condition = std::nullopt }),
-	    .colorn
-	    = std::make_unique<UserSetting> (UserSetting { .value = std::make_unique<DynamicValue> (glm::vec3 (1.0f)),
-							   .property = nullptr,
-							   .condition = std::nullopt })
+	    .enabled = Builders::UserSettingBuilder::fromValue (false),
+	    .alpha = Builders::UserSettingBuilder::fromValue (1.0f),
+	    .size = Builders::UserSettingBuilder::fromValue (1.0f),
+	    .lifetime = Builders::UserSettingBuilder::fromValue (1.0f),
+	    .rate = Builders::UserSettingBuilder::fromValue (1.0f),
+	    .speed = Builders::UserSettingBuilder::fromValue (1.0f),
+	    .count = Builders::UserSettingBuilder::fromValue (1.0f),
+	    .color = Builders::UserSettingBuilder::fromValue (1.0f),
+	    .colorn = Builders::UserSettingBuilder::fromValue (1.0f),
 	};
 	const auto instanceOverrideIt = it.optional ("instanceoverride");
 	if (instanceOverrideIt.has_value ()) {
@@ -542,7 +536,7 @@ ParticleUniquePtr ObjectParser::parseParticle (const JSON& it, const Project& pr
 
 ParticleEmitter ObjectParser::parseParticleEmitter (const JSON& it) {
     // Parse string name safely
-    std::string name = "";
+    std::string name;
     const auto nameIt = it.find ("name");
     if (nameIt != it.end () && nameIt->is_string ()) {
 	name = nameIt->get<std::string> ();
@@ -632,21 +626,10 @@ ParticleInitializerUniquePtr ObjectParser::parseParticleInitializer (const JSON&
     std::string name = it.optional<std::string> ("name", "");
 
     if (name == "colorrandom") {
-	// Only normalize if there's no property connection or values are > 1.0
-	auto minSetting = it.user ("min", properties, glm::vec3 (0.0f));
-	auto maxSetting = it.user ("max", properties, glm::vec3 (255.0f));
-
-	auto minVec = minSetting->value->getVec3 ();
-	if (minSetting->property == nullptr && (minVec.x > 1.0f || minVec.y > 1.0f || minVec.z > 1.0f)) {
-	    minSetting->value->update (minVec / 255.0f);
-	}
-
-	auto maxVec = maxSetting->value->getVec3 ();
-	if (maxSetting->property == nullptr && (maxVec.x > 1.0f || maxVec.y > 1.0f || maxVec.z > 1.0f)) {
-	    maxSetting->value->update (maxVec / 255.0f);
-	}
-
-	return std::make_unique<ColorRandomInitializer> (std::move (minSetting), std::move (maxSetting));
+	return std::make_unique<ColorRandomInitializer> (
+	    it.color ("min", properties, Builders::ColorBuilder::Black),
+	    it.color ("max", properties, Builders::ColorBuilder::White)
+	);
     } else if (name == "sizerandom") {
 	return std::make_unique<SizeRandomInitializer> (
 	    it.user ("min", properties, 0.0f), it.user ("max", properties, 20.0f),

@@ -8,21 +8,21 @@
 #include "WallpaperEngine/Render/Shaders/Shader.h"
 
 #include "../TextureProvider.h"
+#include "WallpaperEngine/Scripting/ScriptableObject.h"
 
 #include <glm/vec3.hpp>
+#include <vector>
 
 using namespace WallpaperEngine;
 using namespace WallpaperEngine::Render;
-
+using namespace WallpaperEngine::Scripting;
 namespace WallpaperEngine::Render::Objects::Effects {
 class CMaterial;
 class CPass;
 } // namespace WallpaperEngine::Render::Objects::Effects
 
 namespace WallpaperEngine::Render::Objects {
-class CEffect;
-
-class CImage final : public CRenderable {
+class CImage final : public CRenderable, public ScriptableObject {
     friend CObject;
 
 public:
@@ -33,8 +33,6 @@ public:
     void render () override;
 
     [[nodiscard]] const Image& getImage () const;
-    [[nodiscard]] const std::vector<CEffect*>& getEffects () const;
-    [[nodiscard]] const Effects::CMaterial* getMaterial () const;
     [[nodiscard]] glm::vec2 getSize () const;
 
     [[nodiscard]] GLuint getSceneSpacePosition () const;
@@ -75,12 +73,48 @@ protected:
      */
     [[nodiscard]] bool isAncestryVisible () const;
 
+    struct ResolvedTransform {
+	glm::vec3 origin;
+	glm::vec3 scale;
+	float angle;
+    };
+
+    [[nodiscard]] ResolvedTransform resolveTransform (const WallpaperEngine::Data::Model::Object& object) const;
+
+    /**
+     * Computes the object's own transform (origin/scale/angle) without walking the
+     * parent chain. Used as the per-node step of resolveTransform.
+     */
+    [[nodiscard]] static ResolvedTransform localTransform (const WallpaperEngine::Data::Model::Object& object);
+
 private:
+    bool loadPuppetMesh (const glm::vec2& size);
+    void updatePuppetPositionBuffer (const glm::vec2& size);
+    void setupPuppetGeometryCallback (Effects::CPass* pass) const;
+    ResolvedTransform updateGeometryBuffers ();
+    [[nodiscard]] glm::vec2 resolveGeometrySize (float sceneWidth, float sceneHeight, glm::vec3& origin) const;
+    void updateScenePosition (
+	const glm::vec3& origin, const glm::vec2& size, const glm::vec3& scale, float sceneWidth, float sceneHeight
+    );
+    void uploadGeometryBuffers (const glm::vec2& size);
+    [[nodiscard]] bool shouldRenderFinalPass (bool isLastPass) const;
+    bool configurePassTarget (
+	Effects::CPass* pass, std::shared_ptr<const CFBO>& drawTo,
+	const std::shared_ptr<const TextureProvider>& asInput, std::shared_ptr<const TextureProvider>& effectInput,
+	bool& inTargetEffectSequence
+    );
+
     GLuint m_sceneSpacePosition;
     GLuint m_copySpacePosition;
     GLuint m_passSpacePosition;
     GLuint m_texcoordCopy;
     GLuint m_texcoordPass;
+    GLuint m_puppetSpacePosition = GL_NONE;
+    GLuint m_puppetTexCoord = GL_NONE;
+    GLuint m_puppetIndices = GL_NONE;
+    GLsizei m_puppetIndexCount = 0;
+    bool m_hasPuppetMesh = false;
+    std::vector<GLfloat> m_puppetRawPositions = {};
 
     glm::mat4 m_modelViewProjectionScreen = {};
     glm::mat4 m_modelViewProjectionPass = {};
@@ -101,14 +135,12 @@ private:
 
     const Image& m_image;
 
-    std::vector<CEffect*> m_effects = {};
-    Effects::CMaterial* m_material = nullptr;
-    Effects::CMaterial* m_colorBlendMaterial = nullptr;
     std::vector<Effects::CPass*> m_passes = {};
     std::vector<MaterialPassUniquePtr> m_virtualPassess = {};
 
     glm::vec4 m_pos = {};
     glm::vec3 m_sceneCenter = {};
+    glm::vec2 m_size = {};
 
     bool m_initialized = false;
 
@@ -117,6 +149,8 @@ private:
 	    MaterialUniquePtr material;
 	    ImageEffectPassOverrideUniquePtr override;
 	} colorBlending;
+	std::vector<MaterialUniquePtr> compatibilityMaterials = {};
+	std::vector<ImageEffectPassOverrideUniquePtr> compatibilityOverrides = {};
     } m_materials;
 };
 } // namespace WallpaperEngine::Render::Objects

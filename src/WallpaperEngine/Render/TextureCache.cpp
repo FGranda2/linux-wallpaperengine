@@ -1,5 +1,6 @@
 #include "TextureCache.h"
 
+#include "AlbumTexture.h"
 #include "WallpaperEngine/FileSystem/Container.h"
 
 #include "CTexture.h"
@@ -9,11 +10,51 @@
 #include "WallpaperEngine/Data/Model/Project.h"
 #include "WallpaperEngine/Data/Parsers/TextureParser.h"
 
+#include <algorithm>
+#include <chrono>
+#include <filesystem>
+#include <fstream>
+
 using namespace WallpaperEngine::Render;
 using namespace WallpaperEngine::FileSystem;
 using namespace WallpaperEngine::Data::Parsers;
+using namespace WallpaperEngine::Data::Assets;
 
-TextureCache::TextureCache (RenderContext& context) : Helpers::ContextAware (context) { }
+TextureCache::TextureCache (RenderContext& context) : Helpers::ContextAware (context) {
+    // these textures are special cases, so make sure they're created only upon request
+    this->m_currentThumbnail = std::make_shared<AlbumTexture> (this->getContext ());
+
+#if !NDEBUG
+    glObjectLabel (GL_TEXTURE, this->m_currentThumbnail->getTextureID (0), -1, "$mediaThumbnail");
+#endif
+
+    this->m_previousThumbnail = std::make_shared<AlbumTexture> (this->getContext ());
+
+#if !NDEBUG
+    glObjectLabel (GL_TEXTURE, this->m_previousThumbnail->getTextureID (0), -1, "$mediaPreviousThumbnail");
+#endif
+
+    // load the latest texture (if available)
+    this->m_currentThumbnail->load ();
+
+    // add these to the cache and return the right one
+    this->store ("$mediaThumbnail", this->m_currentThumbnail);
+    this->store ("$mediaPreviousThumbnail", this->m_previousThumbnail);
+
+    this->m_mediaCallback = this->getContext ().getMediaSource ().addAlbumArtListener (
+	[this] (const Media::MediaSource::MediaInfo& data) {
+	    if (this->m_currentThumbnail->isReady ()) {
+		// copy over pixel data and setup the new texture with the new data
+		this->m_previousThumbnail->copyContents (*this->m_currentThumbnail);
+	    }
+
+	    // load the next image
+	    this->m_currentThumbnail->load ();
+	}
+    );
+}
+
+TextureCache::~TextureCache () { this->m_mediaCallback (); }
 
 std::shared_ptr<const TextureProvider> TextureCache::resolve (const std::string& filename) {
     if (const auto found = this->m_textureCache.find (filename); found != this->m_textureCache.end ()) {
@@ -36,6 +77,10 @@ std::shared_ptr<const TextureProvider> TextureCache::resolve (const std::string&
 	    auto parsedTexture = TextureParser::parse (stream, filename, metadataLoader);
 	    auto texture = std::make_shared<CTexture> (this->getContext (), std::move (parsedTexture));
 
+#if !NDEBUG
+	    glObjectLabel (GL_TEXTURE, texture->getTextureID (0), -1, filename.c_str ());
+#endif
+
 	    this->store (filename, texture);
 
 	    return texture;
@@ -44,6 +89,7 @@ std::shared_ptr<const TextureProvider> TextureCache::resolve (const std::string&
 	}
     }
 
+    // TODO: FILL IN WITH A CHECKERED PATTERN TEXTURE INSTEAD?
     throw AssetLoadException ("Cannot find file", filename, std::error_code ());
 }
 

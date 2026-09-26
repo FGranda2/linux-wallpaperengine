@@ -4,9 +4,11 @@ cmake-build-*
 build/
 build-debug/
 .vscode/
+.zed/
 third_party/
 packaging/archlinux/*
 !packaging/archlinux/PKGBUILD
 *-protocol.o
 *-protocol.c
 *-protocol.h
+AGENTS.md

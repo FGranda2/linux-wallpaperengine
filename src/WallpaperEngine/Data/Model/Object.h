@@ -1,5 +1,6 @@
 #pragma once
 
+#include <map>
 #include <optional>
 #include <string>
 #include <utility>
@@ -7,6 +8,7 @@
 
 #include <glm/glm.hpp>
 
+#include "DynamicValue.h"
 #include "Effect.h"
 #include "Material.h"
 #include "Model.h"
@@ -25,6 +27,10 @@ struct ObjectData {
     std::optional<int> parent;
     /** The point of origin of the object */
     UserSettingUniquePtr origin;
+    /** Transform fields for generic scene/group objects. Typed objects keep their own transform fields. */
+    UserSettingUniquePtr groupScale;
+    UserSettingUniquePtr groupAngles;
+    UserSettingUniquePtr groupVisible;
 };
 
 /**
@@ -53,6 +59,7 @@ struct ImageEffectPassOverride {
     ComboMap combos;
     ShaderConstantMap constants;
     TextureMap textures;
+    TextureMap usertextures;
     std::optional<std::string> shaderOverride; // Overrides MaterialPass::shader when set
 };
 
@@ -82,10 +89,10 @@ struct ImageEffect {
  */
 struct ImageAnimationLayer {
     int id;
-    float rate;
+    UserSettingUniquePtr rate;
     UserSettingUniquePtr visible;
-    float blend;
-    int animation;
+    UserSettingUniquePtr blend;
+    UserSettingUniquePtr animation;
 };
 
 struct ImageData {
@@ -107,9 +114,9 @@ struct ImageData {
     /** Parallax depth used for parallax scrolling */
     UserSettingUniquePtr parallaxDepth;
     /** The color blending mode for this image */
-    int colorBlendMode;
+    UserSettingUniquePtr colorBlendMode;
     /** The brightness of the image */
-    float brightness;
+    UserSettingUniquePtr brightness;
     /** The material in use for this image */
     ModelUniquePtr model;
     /** The effects applied to this image after the material is rendered */
@@ -575,5 +582,43 @@ public:
     explicit Particle (ObjectData data, ParticleData particleData) noexcept :
 	Object (std::move (data)), ParticleData (std::move (particleData)) { };
     ~Particle () override = default;
+};
+
+/**
+ * Text object data. Phase 1 of text support covers only static text;
+ * dynamic (script-driven) text captures the script source for a future
+ * pass but renders whatever initial value the scene provides.
+ */
+struct TextData {
+    /** Initial text content to render (for scripted text, this is the `value` placeholder) */
+    UserSettingUniquePtr text;
+    /** Font reference from scene (e.g. "fonts/VCR_OSD_MONO.ttf" or "systemfont_arial") */
+    std::string font;
+    /** Font size in points, optionally bound to a user setting or script */
+    UserSettingUniquePtr pointSize;
+    /** Bounding box size */
+    glm::vec2 size;
+    /** Scale (x, y, z) */
+    UserSettingUniquePtr scale;
+    /** Text color as linear-space RGB */
+    UserSettingUniquePtr color;
+    /** Alpha multiplier */
+    UserSettingUniquePtr alpha;
+    /** Whether the text is visible */
+    UserSettingUniquePtr visible;
+    /** Horizontal alignment: "left", "center", "right" */
+    std::string alignment;
+    /** Vertical alignment: "top", "center", "bottom" */
+    std::string verticalalign;
+    /** Padding inside the bounding box */
+    int padding;
+    // TODO: PARSE LIMITS TOO!
+};
+
+class Text : public Object, public TextData {
+public:
+    explicit Text (ObjectData data, TextData textData) noexcept :
+	Object (std::move (data)), TextData (std::move (textData)) { };
+    ~Text () override = default;
 };
 } // namespace WallpaperEngine::Data::Model
